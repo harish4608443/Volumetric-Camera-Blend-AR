@@ -1,0 +1,167 @@
+====================================================================
+PHONE CAMERA FEED + VOLUMETRIC OVERLAY SETUP
+====================================================================
+
+This setup uses your Samsung S24's real camera to capture your room,
+then overlays volumetric 3D effects on top of the live video feed.
+
+====================================================================
+UNITY SETUP STEPS
+====================================================================
+
+STEP 1: CREATE CANVAS FOR DISPLAY
+----------------------------------
+1. In Hierarchy, right-click → UI → Canvas
+2. Select Canvas, set:
+   - Render Mode: "Screen Space - Overlay"
+   - Canvas Scaler → UI Scale Mode: "Scale With Screen Size"
+   - Reference Resolution: 1920 x 1080
+
+3. Right-click on Canvas → UI → Raw Image
+4. Rename it to "CameraDisplay"
+5. Select "CameraDisplay":
+   - Anchor: Stretch both (click square in Rect Transform, hold Alt+Shift, click bottom-right)
+   - Left: 0, Right: 0, Top: 0, Bottom: 0 (fills entire screen)
+
+STEP 2: DELETE OLD MAIN CAMERA (IMPORTANT!)
+--------------------------------------------
+1. Select "Main Camera" in Hierarchy
+2. Press Delete (we don't need virtual camera for background)
+
+STEP 3: CREATE VOLUMETRIC CAMERA
+---------------------------------
+1. In Hierarchy, right-click → Camera
+2. Rename it to "Volumetric Camera"
+3. Set these properties:
+   - Transform Position: (0, 0, 0)
+   - Transform Rotation: (0, 0, 0)
+   - Clear Flags: "Solid Color"
+   - Background: RGBA (0, 0, 0, 0) - FULLY TRANSPARENT!
+   - Culling Mask: ONLY "Volumetric" layer (uncheck everything else)
+   - Depth: 0
+
+STEP 4: CREATE VOLUMETRIC LAYER
+--------------------------------
+1. Edit → Project Settings → Tags and Layers
+2. Add layer: "Volumetric"
+
+STEP 5: CREATE GAME CONTROLLER
+-------------------------------
+1. In Hierarchy, right-click → Create Empty
+2. Rename it to "CameraFeedController"
+3. Add Component → Search "CameraFeedVolumetricBlend"
+4. In the script component, assign:
+   - Display Image: Drag "CameraDisplay" from Hierarchy
+   - Volumetric Camera: Drag "Volumetric Camera" from Hierarchy
+   - Blend Shader: Drag "VolumetricBlend" shader from Assets
+   - Volumetric Alpha: 0.5 (adjust as needed)
+   - Requested Width: 1920
+   - Requested Height: 1080
+   - Requested FPS: 30
+
+STEP 6: ADD VOLUMETRIC 3D OBJECTS
+----------------------------------
+These will appear overlaid on your real camera feed!
+
+Example 1: Floating Cube
+1. GameObject → 3D Object → Cube
+2. Position: (0, 0, 2) - 2 meters in front of camera
+3. Scale: (0.3, 0.3, 0.3) - smaller
+4. Set Layer: "Volumetric"
+5. Add Material:
+   - Create Material → Set Rendering Mode: "Transparent"
+   - Set Color: Red with Alpha = 128
+   - Drag onto cube
+
+Example 2: Particle System (Fog/Smoke effect)
+1. GameObject → Effects → Particle System
+2. Position: (0, 0, 3)
+3. Set Layer: "Volumetric"
+4. Configure:
+   - Start Lifetime: 3
+   - Start Speed: 0.5
+   - Start Size: 0.3
+   - Max Particles: 500
+   - Emission Rate: 50
+
+STEP 7: ADD CAMERA PERMISSIONS (CRITICAL!)
+-------------------------------------------
+1. Edit → Project Settings → Player
+2. Android tab → Other Settings
+3. Scroll to "Configuration"
+4. Check: ✅ "Camera Usage Description"
+5. Add text: "This app needs camera access to blend volumetric effects"
+
+STEP 8: BUILD SETTINGS
+-----------------------
+1. File → Build Settings
+2. Platform: Android
+3. Player Settings:
+   - Scripting Backend: IL2CPP
+   - Target Architectures: ARM64
+   - Minimum API Level: Android 7.0 (API 24) or higher
+4. Add "Always Included Shaders":
+   - Edit → Project Settings → Graphics
+   - Always Included Shaders → Add "VolumetricBlend" shader
+
+STEP 9: TEST IN UNITY EDITOR (Optional)
+----------------------------------------
+In Unity Editor, it will use your PC webcam if available.
+1. Press Play
+2. You should see your webcam feed
+3. Volumetric objects will overlay on top
+
+STEP 10: BUILD TO SAMSUNG S24
+------------------------------
+1. Connect Samsung S24 via USB
+2. Enable USB Debugging on phone
+3. File → Build Settings → Build and Run
+4. On phone, grant Camera permission when prompted
+5. You should see:
+   - Live camera feed showing your room (RGB)
+   - Volumetric 3D objects floating in AR-like overlay (V)
+   - Both blended together (RGB+V)
+
+====================================================================
+USAGE
+====================================================================
+
+- Move your phone around - camera feed updates in real-time
+- Volumetric objects stay in 3D space relative to camera
+- Adjust "Volumetric Alpha" slider (0-1) to control blend intensity
+- Add more 3D objects on "Volumetric" layer for more effects
+
+====================================================================
+WHAT YOU'LL SEE
+====================================================================
+
+Camera shows your real room (walls, furniture, etc.) = RGB layer
++ Volumetric 3D objects (cubes, particles, effects) = V layer
+= Real world + virtual volumetric overlay = RGB+V
+
+This is similar to AR, but with custom volumetric blending!
+
+====================================================================
+TROUBLESHOOTING
+====================================================================
+
+Black screen:
+- Check camera permissions on phone
+- Make sure Canvas/RawImage is set up correctly
+- Check Console for errors
+
+No volumetric objects visible:
+- Verify objects are on "Volumetric" layer
+- Check Volumetric Alpha is not 0
+- Ensure Volumetric Camera Culling Mask is correct
+
+Camera upside down/rotated:
+- The script handles rotation automatically
+- If issues persist, check FixCameraOrientation() function
+
+Performance issues:
+- Lower camera resolution (requestedWidth/Height)
+- Reduce particle count
+- Lower FPS to 24
+
+====================================================================

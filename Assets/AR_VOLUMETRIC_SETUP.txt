@@ -1,0 +1,287 @@
+====================================================================
+AR VOLUMETRIC BLEND - COMPLETE SETUP GUIDE
+Samsung S24 with ARCore Plane Detection + Depth API
+====================================================================
+
+This creates a dual-camera system:
+- Camera 1 (RGB): Phone camera feed with colored plane overlays
+- Camera 2 (Volumetric/Depth): Depth-based volumetric rendering
+- Final: RGB + Volumetric blended output
+
+====================================================================
+PART 1: INSTALL AR FOUNDATION PACKAGES
+====================================================================
+
+STEP 1: Open Package Manager
+-----------------------------
+1. In Unity: Window → Package Manager
+2. Top-left dropdown: Change "Packages: In Project" to "Unity Registry"
+
+STEP 2: Install AR Foundation
+------------------------------
+1. Search for "AR Foundation"
+2. Select "AR Foundation" package
+3. Click "Install" (bottom-right)
+4. Wait for installation to complete
+
+STEP 3: Install ARCore XR Plugin
+---------------------------------
+1. In Package Manager, search for "ARCore"
+2. Select "ARCore XR Plugin"
+3. Click "Install"
+4. Wait for installation
+
+STEP 4: Verify Installation
+----------------------------
+After installation, you should see in Package Manager:
+✅ AR Foundation (version 5.x or higher)
+✅ ARCore XR Plugin (version 5.x or higher)
+
+====================================================================
+PART 2: UNITY SCENE SETUP
+====================================================================
+
+STEP 1: Delete Default Camera
+------------------------------
+1. Select "Main Camera" in Hierarchy
+2. Press Delete
+
+STEP 2: Create AR Session
+--------------------------
+1. Right-click Hierarchy → XR → AR Session
+2. This creates "AR Session" GameObject
+3. Leave default settings
+
+STEP 3: Create AR Session Origin
+---------------------------------
+1. Right-click Hierarchy → XR → AR Session Origin
+2. This creates "AR Session Origin" with "AR Camera" child
+3. The "AR Camera" is now your main camera
+
+STEP 4: Add AR Plane Manager
+-----------------------------
+1. Select "AR Session Origin" in Hierarchy
+2. In Inspector, click "Add Component"
+3. Search for "AR Plane Manager"
+4. Add it
+5. In AR Plane Manager:
+   - Detection Mode: Everything (detects all plane types)
+   - Plane Prefab: Leave empty for now
+
+STEP 5: Add AR Occlusion Manager (For Depth)
+---------------------------------------------
+1. Select "AR Camera" (child of AR Session Origin)
+2. Add Component → "AR Occlusion Manager"
+3. Set:
+   - Environment Depth Mode: Fastest (or Best for better quality)
+   - Occlusion Preference Mode: Prefer Environment Depth
+
+STEP 6: Add AR Camera Manager
+------------------------------
+1. Select "AR Camera"
+2. Should already have "AR Camera Manager" component
+3. If not, Add Component → "AR Camera Manager"
+
+STEP 7: Create Volumetric Camera
+---------------------------------
+1. Right-click Hierarchy → Camera
+2. Rename to "Volumetric Camera"
+3. Set Transform to match AR Camera:
+   - Position: (0, 0, 0)
+   - Rotation: (0, 0, 0)
+4. Set Camera properties:
+   - Clear Flags: Solid Color
+   - Background: RGBA(0, 0, 0, 0) - Transparent!
+   - Culling Mask: Nothing (uncheck all)
+   - Depth: 1 (renders after AR Camera)
+5. Make it child of "AR Camera" so it follows AR camera movement
+
+STEP 8: Create Plane Material
+------------------------------
+1. Right-click in Project → Create → Material
+2. Name it "PlaneMaterial"
+3. Set:
+   - Shader: Standard or Unlit/Transparent
+   - Rendering Mode: Transparent
+   - Albedo: Any color (will be overridden by script)
+   - Alpha: 128
+
+STEP 9: Setup AR Volumetric Blend Script
+-----------------------------------------
+1. Select "AR Camera" in Hierarchy
+2. Add Component → "ARVolumetricBlend"
+3. Assign references:
+   - AR Camera Manager: Drag "AR Camera" from Hierarchy
+   - AR Plane Manager: Drag "AR Session Origin" from Hierarchy
+   - AR Occlusion Manager: Drag "AR Camera" from Hierarchy
+   - Volumetric Camera: Drag "Volumetric Camera" from Hierarchy
+   - Plane Material: Drag "PlaneMaterial" from Project
+   - Blend Shader: Drag "VolumetricBlend" shader from Assets
+4. Settings:
+   - Plane Overlay Alpha: 0.5
+   - Volumetric Alpha: 0.5
+   - Show Planes: ✅ Checked
+   - Depth Colorization: ✅ Checked
+   - Max Depth: 10.0
+
+STEP 10: Set AR Plane Manager Prefab
+-------------------------------------
+1. Select "AR Session Origin"
+2. In AR Plane Manager component:
+   - Leave "Plane Prefab" empty OR
+   - Create a simple plane prefab with PlaneMaterial
+
+====================================================================
+PART 3: PROJECT SETTINGS
+====================================================================
+
+STEP 1: XR Plugin Management
+-----------------------------
+1. Edit → Project Settings → XR Plugin Management
+2. Click "Install XR Plugin Management" if not installed
+3. Switch to Android tab (Android icon)
+4. Check ✅ "ARCore"
+
+STEP 2: Player Settings
+-----------------------
+1. Edit → Project Settings → Player
+2. Android tab:
+   - Minimum API Level: Android 7.0 (API 24) or higher
+   - Scripting Backend: IL2CPP
+   - Target Architectures: ✅ ARM64
+
+3. Other Settings:
+   - Package Name: com.yourcompany.arvolumetric
+   - Camera Usage Description: "AR volumetric blend requires camera access"
+
+STEP 3: Graphics Settings
+--------------------------
+1. Edit → Project Settings → Graphics
+2. Always Included Shaders → Add:
+   - Drag "VolumetricBlend" shader here
+
+STEP 4: Quality Settings
+-------------------------
+1. Edit → Project Settings → Quality
+2. Android settings:
+   - Anti Aliasing: 4x or 2x
+   - Texture Quality: Full Res
+
+====================================================================
+PART 4: BUILD AND DEPLOY
+====================================================================
+
+STEP 1: Build Settings
+-----------------------
+1. File → Build Settings
+2. Platform: Android
+3. Click "Add Open Scenes" if scene not listed
+4. Player Settings (verify from Part 3)
+
+STEP 2: Build to Device
+------------------------
+1. Connect Samsung S24 via USB
+2. Enable USB Debugging on phone
+3. File → Build Settings → Build and Run
+4. Choose save location for APK
+5. Unity will build and install
+
+STEP 3: Grant Permissions
+--------------------------
+When app starts on Samsung S24:
+1. Allow Camera permission
+2. Allow AR permission (ARCore)
+3. Move phone to scan environment
+
+====================================================================
+PART 5: USAGE
+====================================================================
+
+HOW IT WORKS:
+-------------
+1. Point camera at floors, walls, tables
+2. ARCore detects planes automatically
+3. Detected planes show with colored overlays:
+   - GREEN = Horizontal surfaces (floors)
+   - CYAN = Ceilings
+   - BLUE = Vertical surfaces (walls)
+   - YELLOW = Other surfaces
+4. Depth information colorizes the scene:
+   - RED tint = Close objects
+   - BLUE tint = Far objects
+5. Everything blends in real-time on camera feed
+
+CONTROLS:
+---------
+- Plane Overlay Alpha: Controls plane transparency (0-1)
+- Volumetric Alpha: Controls depth overlay intensity (0-1)
+- Show Planes: Toggle plane visualization on/off
+- Depth Colorization: Toggle depth-based coloring
+- Max Depth: Set maximum depth range for colorization
+
+====================================================================
+WHAT YOU'LL SEE:
+====================================================================
+
+📱 Live camera feed showing your room (RGB)
++ 🟢 Green overlays on floors (detected planes)
++ 🔵 Blue overlays on walls (detected planes)
++ 🌈 Color gradient based on depth (red=close, blue=far)
+= Combined volumetric AR view
+
+The app continuously:
+- Detects surfaces in your environment
+- Applies semi-transparent colored overlays
+- Colorizes based on depth information
+- Blends everything with live camera feed
+
+====================================================================
+TROUBLESHOOTING:
+====================================================================
+
+No camera feed:
+- Check camera permissions on phone
+- Verify AR Camera has AR Camera Manager
+- Check Console for ARCore errors
+
+No planes detected:
+- Move phone around to scan environment
+- Point at flat surfaces (floors, tables, walls)
+- Ensure good lighting
+- Check AR Plane Manager is enabled
+
+No depth colorization:
+- Samsung S24 should support ARCore Depth API
+- Check AR Occlusion Manager is on AR Camera
+- Verify "Environment Depth Mode" is set
+- Try "Depth Colorization" toggle
+
+Black screen:
+- Check ARCore XR Plugin is installed
+- Verify XR Plugin Management has ARCore checked
+- Ensure Android platform is selected
+
+App crashes:
+- Check Minimum API Level is at least Android 7.0
+- Verify ARM64 architecture is selected
+- Check IL2CPP scripting backend
+
+====================================================================
+ADVANCED:
+====================================================================
+
+To customize plane colors:
+- Edit GetPlaneColor() method in ARVolumetricBlend.cs
+- Change color based on plane type or size
+
+To adjust depth visualization:
+- Modify frag() function in VolumetricBlend.shader
+- Change color gradient (currently red→blue)
+- Adjust alpha blending values
+
+To add custom volumetric objects:
+- Create 3D objects in scene
+- Set Volumetric Camera's Culling Mask to custom layer
+- Objects will render in volumetric pass
+
+====================================================================

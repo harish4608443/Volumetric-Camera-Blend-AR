@@ -1,0 +1,134 @@
+====================================================================
+UNITY SETUP INSTRUCTIONS - Dual Camera Volumetric Blending
+====================================================================
+
+STEP 1: CREATE NEW UNITY PROJECT
+---------------------------------
+1. Open Unity Hub
+2. Create a new 3D project (URP or Built-in Render Pipeline)
+3. Name your project (e.g., "VolumetricCameraBlend")
+
+STEP 2: IMPORT THE SCRIPTS
+---------------------------
+1. Copy the following files to your Unity project's Assets folder:
+   - DualCameraVolumetricBlend.cs
+   - VolumetricBlend.shader
+
+2. Wait for Unity to compile the scripts
+
+STEP 3: SETUP THE MAIN CAMERA
+------------------------------
+1. In the Hierarchy, select the "Main Camera"
+2. In the Inspector, click "Add Component"
+3. Search for "DualCameraVolumetricBlend" and add it
+4. The script will automatically use this camera as the main RGB camera
+
+STEP 4: CREATE THE VOLUMETRIC CAMERA
+-------------------------------------
+1. In Hierarchy, right-click and select "Camera"
+2. Rename it to "Volumetric Camera"
+3. Position it at the same location as Main Camera, or adjust as needed
+4. In the Inspector for Volumetric Camera:
+   - Set Clear Flags to "Solid Color" or "Skybox" (depending on your needs)
+   - Set Culling Mask to render only volumetric objects (create a layer called "Volumetric")
+   - Set Depth to a value LOWER than Main Camera (e.g., if Main Camera is 0, set this to -1)
+
+STEP 5: ASSIGN REFERENCES IN MAIN CAMERA
+-----------------------------------------
+1. Select "Main Camera" in Hierarchy
+2. In the Inspector, find the "DualCameraVolumetricBlend" component
+3. Assign references:
+   - Main Camera: Should auto-assign, or drag Main Camera here
+   - Volumetric Camera: Drag "Volumetric Camera" from Hierarchy here
+   - Blend Shader: Drag "VolumetricBlend.shader" from Project window here
+4. Adjust "Volumetric Alpha" slider (0.5 is a good starting point)
+
+STEP 6: CREATE VOLUMETRIC LAYER (OPTIONAL BUT RECOMMENDED)
+-----------------------------------------------------------
+1. Go to Edit > Project Settings > Tags and Layers
+2. Add a new Layer called "Volumetric"
+3. Set your volumetric objects to this layer
+4. On the Volumetric Camera, set Culling Mask to only render "Volumetric" layer
+5. On the Main Camera, exclude "Volumetric" from its Culling Mask
+
+STEP 7: CREATE TEST SCENE
+--------------------------
+For Main Camera objects:
+1. Create some regular objects (cubes, spheres) in the scene
+2. Keep them on the Default layer
+
+For Volumetric Camera objects:
+1. Create additional objects (e.g., particles, transparent meshes)
+2. Set them to the "Volumetric" layer
+3. Consider using materials with transparency/alpha
+
+STEP 8: CONFIGURE VOLUMETRIC RENDERING
+---------------------------------------
+For proper volumetric effects, you may want to:
+
+1. Add particle systems to the Volumetric layer
+2. Use custom volumetric shaders for your volumetric objects
+3. Adjust the Volumetric Camera's background:
+   - For transparent volumetrics: Use Clear Flags = "Solid Color" with alpha = 0
+4. Create materials with alpha/transparency for better blending
+
+STEP 9: TEST AND ADJUST
+------------------------
+1. Press Play in Unity
+2. You should see both camera views blended together
+3. Adjust the "Volumetric Alpha" slider on the Main Camera's script component
+4. Fine-tune camera positions and rotations as needed
+5. Adjust the blend factor in real-time to see the effect
+
+STEP 10: OPTIMIZATION TIPS
+---------------------------
+1. Match render texture resolution to your needs (modify script if needed)
+2. Use appropriate Quality Settings for your target platform
+3. Consider using different rendering paths for each camera if needed
+4. For VR/AR: Create separate instances for each eye
+
+====================================================================
+TROUBLESHOOTING
+====================================================================
+
+Problem: Black screen or no rendering
+Solution: 
+- Check that both cameras are enabled
+- Verify shader is assigned correctly
+- Check Console for errors
+
+Problem: Only one camera visible
+Solution:
+- Verify Volumetric Camera is assigned in Inspector
+- Check camera Culling Masks are set correctly
+- Ensure Volumetric Alpha is not 0 or 1
+
+Problem: Performance issues
+Solution:
+- Lower render texture resolution in script
+- Reduce volumetric object complexity
+- Optimize shader calculations
+
+Problem: Colors look wrong
+Solution:
+- Adjust the blend alpha value
+- Check camera Clear Flags settings
+- Verify lighting setup for both layers
+
+====================================================================
+ADVANCED CUSTOMIZATION
+====================================================================
+
+To modify blend behavior:
+- Edit VolumetricBlend.shader, change the frag function
+- Experiment with different blend modes (additive, multiply, etc.)
+
+To add more cameras:
+- Duplicate the system and chain multiple blend operations
+- Modify the script to support N cameras
+
+To support HDR:
+- Ensure cameras have "Allow HDR" enabled
+- Use HDR render textures (already set in script)
+
+====================================================================

@@ -1,0 +1,74 @@
+// TSDF Volume Integration Compute Shader
+#pragma kernel IntegrateDepth
+#pragma kernel ClearVolume
+
+// Volume parameters
+RWTexture3D<float2> TSDFVolume; // .x = signed distance, .y = weight
+float3 VolumeSize;              // Voxel dimensions
+float3 VolumeOrigin;            // World position of volume corner
+float VoxelSize;                // Size of each voxel in meters
+float TruncationDistance;       // TSDF truncation distance
+
+// Depth data
+Texture2D<float> DepthTexture;
+SamplerState sampler_DepthTexture;
+float4x4 CameraToWorld;         // Camera pose
+float4x4 CameraIntrinsics;      // Camera intrinsics
+float2 DepthResolution;
+
+[numthreads(8,8,8)]
+void IntegrateDepth(uint3 id : SV_DispatchThreadID)
+{
+    // Check bounds
+    if (id.x >= (uint)VolumeSize.x || id.y >= (uint)VolumeSize.y || id.z >= (uint)VolumeSize.z)
+        return;
+    
+    // Convert voxel to world position
+    float3 voxelPos = VolumeOrigin + (float3(id) + 0.5) * VoxelSize;
+    
+    // Transform to camera space
+    float4 camPos = mul(CameraToWorld, float4(voxelPos, 1.0));
+    
+    // Project to depth image
+    float2 uv = float2(camPos.x / camPos.z, camPos.y / camPos.z);
+    uv = uv * 0.5 + 0.5; // [-1,1] to [0,1]
+    
+    // Check if within depth image bounds
+    if (uv.x < 0 || uv.x > 1 || uv.y < 0 || uv.y > 1 || camPos.z <= 0)
+        return;
+    
+    // Sample depth
+    float measuredDepth = DepthTexture.SampleLevel(sampler_DepthTexture, uv, 0).r;
+    
+    if (measuredDepth < 0.01)
+        return;
+    
+    // Compute signed distance
+    float sdf = measuredDepth - camPos.z;
+    
+    // Truncate
+    if (sdf < -TruncationDistance)
+        return;
+    
+    sdf = clamp(sdf, -TruncationDistance, TruncationDistance) / TruncationDistance;
+    
+    // Update TSDF value with weighted average
+    float2 current = TSDFVolume[id];
+    float currentWeight = current.y;
+    float newWeight = 1.0;
+    
+    float totalWeight = currentWeight + newWeight;
+    float updatedSDF = (current.x * currentWeight + sdf * newWeight) / totalWeight;
+    float updatedWeight = min(totalWeight, 100.0); // Cap weight
+    
+    TSDFVolume[id] = float2(updatedSDF, updatedWeight);
+}
+
+[numthreads(8,8,8)]
+void ClearVolume(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= (uint)VolumeSize.x || id.y >= (uint)VolumeSize.y || id.z >= (uint)VolumeSize.z)
+        return;
+    
+    TSDFVolume[id] = float2(1.0, 0.0); // Empty space, no weight
+}
