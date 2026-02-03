@@ -434,7 +434,9 @@ GameObject:
   - component: {fileID: 1863820476}
   - component: {fileID: 1863820475}
   - component: {fileID: 1863820474}
-  - component: {fileID: 1863820481}
+  - component: {fileID: 1863820483}
+  - component: {fileID: 1863820484}
+  - component: {fileID: 1863820485}
   m_Layer: 0
   m_Name: AR Camera
   m_TagString: MainCamera
@@ -526,6 +528,7 @@ MonoBehaviour:
   m_HumanSegmentationStencilMode: 0
   m_HumanSegmentationDepthMode: 0
   m_EnvironmentDepthMode: 1
+  m_EnvironmentDepthTemporalSmoothing: 1
   m_OcclusionPreferenceMode: 0
 --- !u!114 &1863820476
 MonoBehaviour:
@@ -593,7 +596,45 @@ Transform:
   m_Father: {fileID: 748656572}
   m_RootOrder: 0
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!114 &1863820481
+--- !u!114 &1863820483
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1863820472}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 5da36881a95c3b946807a70254a91e68, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  occlusionManager: {fileID: 1863820475}
+  cameraManager: {fileID: 1863820477}
+  cameraBackground: {fileID: 1863820476}
+  volumeResolution: {x: 64, y: 64, z: 64}
+  voxelSize: 0.05
+  truncationDistance: 0.2
+  maxDepth: 5
+  volumeIntegrationShader: {fileID: 4800000, guid: e15096411292bb546b24def508cef3db, type: 3}
+  rayMarchShader: {fileID: 4800000, guid: e7465582002cf1d45b2c3fe47c7640cc, type: 3}
+  depthColorizeShader: {fileID: 4800000, guid: 876642ec74274fa4b84a06d86529f06f, type: 3}
+  volumeOpacity: 0.5
+  stepSize: 0.03
+  surfaceThreshold: 0.03
+  integrationInterval: 5
+--- !u!114 &1863820484
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1863820472}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 6308162da7f17f3438035cea85f40c97, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+--- !u!114 &1863820485
 MonoBehaviour:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
@@ -602,17 +643,11 @@ MonoBehaviour:
   m_GameObject: {fileID: 1863820472}
   m_Enabled: 0
   m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: dec4c18e8ec8fa947b5813195e9529e3, type: 3}
+  m_Script: {fileID: 11500000, guid: fadcf2a57e875ec4e9dbccfe48dcc410, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  occlusionManager: {fileID: 1863820475}
-  cameraManager: {fileID: 1863820477}
-  volumeResolution: {x: 128, y: 128, z: 128}
-  voxelSize: 0.05
-  truncationDistance: 0.15
-  rayMarchShader: {fileID: 4800000, guid: 26a3c86722b878a4e8dae95051f22597, type: 3}
-  volumeOpacity: 0.5
-  rayMarchStepSize: 0.01
-  maxRayMarchSteps: 200
-  integrationInterval: 5
-  volumeIntegrationCS: {fileID: 7200000, guid: 50f0add51b17d934eb1650a2349f701a, type: 3}
+  tsdfVolume: {fileID: 1863820483}
+  stepSize: 0.02
+  maxSteps: 128
+  surfaceThreshold: 0.03
+  volumeOpacity: 0.6

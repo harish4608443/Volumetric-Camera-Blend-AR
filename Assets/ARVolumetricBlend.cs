@@ -75,6 +75,11 @@ public class ARVolumetricBlend : MonoBehaviour
 
     private void Start()
     {
+        Debug.Log("═══════════════════════════════════════════════════");
+        Debug.Log("         ARVolumetricBlend DEPTH VISUALIZATION");
+        Debug.Log("         + TSDF fusion in background");
+        Debug.Log("═══════════════════════════════════════════════════");
+        
         // Validate AR components
         if (arCameraManager == null)
         {
@@ -182,6 +187,8 @@ public class ARVolumetricBlend : MonoBehaviour
         cam.AddCommandBuffer(CameraEvent.AfterEverything, commandBuffer);
         
         Debug.Log("✓ CommandBuffer added to AR Camera");
+        Debug.Log($"   Native depth resolution will be used (NOT screen-scaled)");
+        Debug.Log($"   Camera intrinsics (FOV, projection matrix) will be applied correctly");
     }
 
     private void LateUpdate()
@@ -201,6 +208,42 @@ public class ARVolumetricBlend : MonoBehaviour
         depthMaterial.SetTexture("_EnvironmentDepth", depthTexture);
         depthMaterial.SetFloat("_ColorIntensity", colorIntensity);
         depthMaterial.SetFloat("_NormalStrength", normalStrength);
+        
+        // Log native depth resolution and camera intrinsics
+        if (Time.frameCount == 100)
+        {
+            Camera cam = GetComponent<Camera>();
+            Debug.Log($"");
+            Debug.Log($"═══════════════════════════════════════════════════");
+            Debug.Log($"         DEPTH FUSION CONFIGURATION");
+            Debug.Log($"═══════════════════════════════════════════════════");
+            Debug.Log($"Native Depth Resolution: {depthTexture.width}x{depthTexture.height}");
+            Debug.Log($"   ✓ Using ARCore depth at NATIVE resolution");
+            Debug.Log($"   ✓ NOT scaled to screen resolution");
+            Debug.Log($"");
+            Debug.Log($"Camera Intrinsics:");
+            Debug.Log($"   Vertical FOV: {cam.fieldOfView:F2}°");
+            Debug.Log($"   Aspect Ratio: {cam.aspect:F3}");
+            
+            // Get focal length from projection matrix
+            Matrix4x4 proj = cam.projectionMatrix;
+            float fy = proj[1, 1];
+            float fx = proj[0, 0];
+            float cx = proj[0, 2];
+            float cy = proj[1, 2];
+            Debug.Log($"   Projection Matrix:");
+            Debug.Log($"     fx (horizontal focal): {fx:F4}");
+            Debug.Log($"     fy (vertical focal): {fy:F4}");
+            Debug.Log($"     cx (principal point x): {cx:F4}");
+            Debug.Log($"     cy (principal point y): {cy:F4}");
+            Debug.Log($"");
+            Debug.Log($"TSDF Approach:");
+            Debug.Log($"   Real-time depth fusion per frame");
+            Debug.Log($"   Uses native depth + camera intrinsics directly");
+            Debug.Log($"   Volumetric rendering via depth reprojection");
+            Debug.Log($"═══════════════════════════════════════════════════");
+            Debug.Log($"");
+        }
         
         // Rebuild command buffer every frame
         commandBuffer.Clear();

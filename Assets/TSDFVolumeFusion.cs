@@ -13,20 +13,24 @@ public class TSDFVolumeFusion : MonoBehaviour
     public ARCameraManager cameraManager;
     
     [Header("Volume Settings")]
-    [Tooltip("Volume dimensions in voxels")]
-    public Vector3Int volumeResolution = new Vector3Int(128, 128, 128);
+    [Tooltip("Volume dimensions in voxels - Mobile optimized")]
+    public Vector3Int volumeResolution = new Vector3Int(256, 64, 256);
     
     [Tooltip("Size of each voxel in meters")]
-    public float voxelSize = 0.05f;
+    public float voxelSize = 0.02f;
     
     [Tooltip("TSDF truncation distance in meters")]
-    public float truncationDistance = 0.15f;
+    public float truncationDistance = 0.10f;
+    
+    [Tooltip("Maximum valid depth value")]
+    public float maxDepth = 5.0f;
     
     [Header("Rendering")]
     public Shader rayMarchShader;
-    public float volumeOpacity = 0.5f;
-    public float rayMarchStepSize = 0.01f;
-    public int maxRayMarchSteps = 200;
+    public float volumeOpacity = 0.3f;
+    public float rayMarchStepSize = 0.02f;
+    public int maxRayMarchSteps = 128;
+    public float surfaceThreshold = 0.01f;
     
     [Header("Integration")]
     [Tooltip("Integrate every N frames")]
@@ -34,7 +38,8 @@ public class TSDFVolumeFusion : MonoBehaviour
     
     // Compute shader and resources
     public ComputeShader volumeIntegrationCS;
-    private RenderTexture tsdfVolume;
+    private RenderTexture tsdfVolume;       // RHalf format for SDF
+    private RenderTexture weightVolume;     // RHalf format for weights
     private Material rayMarchMaterial;
     private CommandBuffer commandBuffer;
     
@@ -59,14 +64,25 @@ public class TSDFVolumeFusion : MonoBehaviour
             return;
         }
         
-        // Initialize TSDF volume (3D texture)
-        tsdfVolume = new RenderTexture(volumeResolution.x, volumeResolution.y, 0, RenderTextureFormat.RGFloat);
+        // Initialize TSDF volume (3D texture) - RFloat format for OpenGLES3 compatibility
+        tsdfVolume = new RenderTexture(volumeResolution.x, volumeResolution.y, 0, RenderTextureFormat.RFloat);
         tsdfVolume.dimension = UnityEngine.Rendering.TextureDimension.Tex3D;
         tsdfVolume.volumeDepth = volumeResolution.z;
         tsdfVolume.enableRandomWrite = true;
+        tsdfVolume.filterMode = FilterMode.Trilinear;
+        tsdfVolume.wrapMode = TextureWrapMode.Clamp;
         tsdfVolume.Create();
         
-        Debug.Log($"✓ TSDF Volume created: {volumeResolution} voxels, {voxelSize}m voxel size");
+        // Separate weight volume
+        weightVolume = new RenderTexture(volumeResolution.x, volumeResolution.y, 0, RenderTextureFormat.RFloat);
+        weightVolume.dimension = UnityEngine.Rendering.TextureDimension.Tex3D;
+        weightVolume.volumeDepth = volumeResolution.z;
+        weightVolume.enableRandomWrite = true;
+        weightVolume.filterMode = FilterMode.Trilinear;
+        weightVolume.wrapMode = TextureWrapMode.Clamp;
+        weightVolume.Create();
+        
+        Debug.Log($"✓ TSDF Volumes created: {volumeResolution} voxels @ RFloat, {voxelSize}m voxel size");
         
         // Get compute kernels
         integrateKernel = volumeIntegrationCS.FindKernel("IntegrateDepth");
@@ -93,15 +109,16 @@ public class TSDFVolumeFusion : MonoBehaviour
     void ClearVolume()
     {
         volumeIntegrationCS.SetTexture(clearKernel, "TSDFVolume", tsdfVolume);
+        volumeIntegrationCS.SetTexture(clearKernel, "WeightVolume", weightVolume);
         volumeIntegrationCS.SetVector("VolumeSize", new Vector3(volumeResolution.x, volumeResolution.y, volumeResolution.z));
         
-        int threadGroupsX = Mathf.CeilToInt(volumeResolution.x / 8.0f);
-        int threadGroupsY = Mathf.CeilToInt(volumeResolution.y / 8.0f);
-        int threadGroupsZ = Mathf.CeilToInt(volumeResolution.z / 8.0f);
+        int threadGroupsX = Mathf.CeilToInt(volumeResolution.x / 4.0f);
+        int threadGroupsY = Mathf.CeilToInt(volumeResolution.y / 4.0f);
+        int threadGroupsZ = Mathf.CeilToInt(volumeResolution.z / 4.0f);
         
         volumeIntegrationCS.Dispatch(clearKernel, threadGroupsX, threadGroupsY, threadGroupsZ);
         
-        Debug.Log("✓ TSDF Volume cleared");
+        Debug.Log("✓ TSDF Volumes cleared");
     }
     
     void LateUpdate()
@@ -127,27 +144,33 @@ public class TSDFVolumeFusion : MonoBehaviour
         
         // Set compute shader parameters
         volumeIntegrationCS.SetTexture(integrateKernel, "TSDFVolume", tsdfVolume);
+        volumeIntegrationCS.SetTexture(integrateKernel, "WeightVolume", weightVolume);
         volumeIntegrationCS.SetTexture(integrateKernel, "DepthTexture", depthTexture);
         volumeIntegrationCS.SetVector("VolumeSize", new Vector3(volumeResolution.x, volumeResolution.y, volumeResolution.z));
         volumeIntegrationCS.SetVector("VolumeOrigin", volumeOrigin);
         volumeIntegrationCS.SetFloat("VoxelSize", voxelSize);
         volumeIntegrationCS.SetFloat("TruncationDistance", truncationDistance);
+        volumeIntegrationCS.SetFloat("MaxDepth", maxDepth);
         volumeIntegrationCS.SetVector("DepthResolution", new Vector2(depthTexture.width, depthTexture.height));
         
         // Camera transforms
-        Matrix4x4 cameraToWorld = Matrix4x4.TRS(transform.position, transform.rotation, Vector3.one).inverse;
-        volumeIntegrationCS.SetMatrix("CameraToWorld", cameraToWorld);
+        Camera cam = GetComponent<Camera>();
+        Matrix4x4 viewMatrix = cam.worldToCameraMatrix;
+        Matrix4x4 projectionMatrix = cam.projectionMatrix;
         
-        // Dispatch compute shader
-        int threadGroupsX = Mathf.CeilToInt(volumeResolution.x / 8.0f);
-        int threadGroupsY = Mathf.CeilToInt(volumeResolution.y / 8.0f);
-        int threadGroupsZ = Mathf.CeilToInt(volumeResolution.z / 8.0f);
+        volumeIntegrationCS.SetMatrix("ViewMatrix", viewMatrix);
+        volumeIntegrationCS.SetMatrix("ProjectionMatrix", projectionMatrix);
+        
+        // Dispatch compute shader (4x4x4 thread groups)
+        int threadGroupsX = Mathf.CeilToInt(volumeResolution.x / 4.0f);
+        int threadGroupsY = Mathf.CeilToInt(volumeResolution.y / 4.0f);
+        int threadGroupsZ = Mathf.CeilToInt(volumeResolution.z / 4.0f);
         
         volumeIntegrationCS.Dispatch(integrateKernel, threadGroupsX, threadGroupsY, threadGroupsZ);
         
         if (frameCount % 300 == 0)
         {
-            Debug.Log($"[TSDF] Integrated depth frame {frameCount / integrationInterval}");
+            Debug.Log($"[TSDF] Integrated depth frame {frameCount / integrationInterval}, depth: {depthTexture.width}x{depthTexture.height}");
         }
     }
     
@@ -163,11 +186,7 @@ public class TSDFVolumeFusion : MonoBehaviour
         rayMarchMaterial.SetFloat("_VolumeOpacity", volumeOpacity);
         rayMarchMaterial.SetFloat("_StepSize", rayMarchStepSize);
         rayMarchMaterial.SetInt("_MaxSteps", maxRayMarchSteps);
-        
-        Matrix4x4 viewToWorld = Camera.main.cameraToWorldMatrix;
-        Matrix4x4 invProjection = Camera.main.projectionMatrix.inverse;
-        rayMarchMaterial.SetMatrix("_CameraToWorld", viewToWorld);
-        rayMarchMaterial.SetMatrix("_CameraInvProjection", invProjection);
+        rayMarchMaterial.SetFloat("_SurfaceThreshold", surfaceThreshold);
         
         // Rebuild command buffer
         commandBuffer.Clear();

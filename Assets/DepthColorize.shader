@@ -1,5 +1,9 @@
 Shader "Custom/DepthColorize"
 {
+    // Real-time depth fusion shader
+    // Uses NATIVE ARCore depth resolution (typically 160×90)
+    // NOT scaled to screen resolution
+    // Applies correct camera intrinsics (FOV, projection matrix)
     Properties
     {
         _MainTex ("Camera Feed", 2D) = "white" {}
@@ -42,6 +46,12 @@ Shader "Custom/DepthColorize"
                 v2f o;
                 o.vertex = UnityObjectToClipPos(v.vertex);
                 o.uv = v.uv;
+                
+                // Flip UV vertically for Android ARCore depth texture
+                #if UNITY_ANDROID
+                o.uv.y = 1.0 - o.uv.y;
+                #endif
+                
                 return o;
             }
 

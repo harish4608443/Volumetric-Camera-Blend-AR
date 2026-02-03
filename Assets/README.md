@@ -1,63 +1,31 @@
-# Dual Camera Volumetric Blending for Unity
+# Volumetric Camera Blend - AR Foundation with TSDF Volume Fusion
 
-This project implements a dual camera system in Unity where a main RGB camera is blended with a volumetric rendering camera using alpha blending.
+This project implements real-time AR depth visualization and TSDF (Truncated Signed Distance Function) volume fusion for volumetric 3D reconstruction on Android devices.
 
-## Files Included
+## Features
 
-1. **DualCameraVolumetricBlend.cs** - Main script that manages both cameras and performs the blending
-2. **VolumetricBlend.shader** - Custom shader for alpha blending the two camera outputs
-3. **UNITY_SETUP_INSTRUCTIONS.txt** - Detailed step-by-step setup guide
+### 1. Real-Time Depth Visualization (ARVolumetricBlend.cs)
+- RGB color gradients based on distance (red=close, blue=far)
+- Surface normal calculation from depth gradients
+- Edge detection on depth discontinuities
+- Works on OpenGLES3 and Vulkan
 
-## Quick Overview
-
-### What It Does
-- **Camera 1 (Main)**: Renders standard RGB scene
-- **Camera 2 (Volumetric)**: Renders volumetric effects separately
-- **Blending**: Uses Graphics.Blit with custom shader to blend both outputs with alpha blending
-- **Result**: RGB + V combined into final image
-
-### Key Features
-- Real-time alpha adjustment via Inspector
-- Automatic render texture management
-- Resolution-independent rendering
-- HDR support
-- Cleanup on destroy
-
-## Setup Summary
-
-1. Import scripts into Unity project
-2. Add `DualCameraVolumetricBlend.cs` to Main Camera
-3. Create a second Camera for volumetric rendering
-4. Assign shader and camera references
-5. Configure layer masks (optional)
-6. Adjust blend alpha to taste
-
-## Technical Details
-
-### Rendering Pipeline
-```
-Main Camera → RenderTexture (RGB)
-Volumetric Camera → RenderTexture (RGBA)
-↓
-Graphics.Blit with VolumetricBlend.shader
-↓
-Final Output (RGB + V)
-```
-
-### Blend Formula
-```glsl
-finalColor.rgb = lerp(mainRGB, volumetricRGB, alpha * volumetricAlpha)
-```
-
-## For Complete Instructions
-
-See **UNITY_SETUP_INSTRUCTIONS.txt** for detailed setup steps, troubleshooting, and optimization tips.
+### 2. TSDF Volume Fusion (TSDFVolumeFusion.cs) **[Requires Vulkan]**
+- True volumetric 3D reconstruction
+- 256×64×256 voxel grid with temporal accumulation
+- Ray marching visualization
+- GPU-accelerated compute shaders
+- **Requires Vulkan graphics API** (OpenGLES3 not supported)
 
 ## Requirements
 
-- Unity 2020.3 or newer
-- Built-in Render Pipeline or URP
-- No additional packages required
+- Unity 2020.3.6f1 or newer
+- AR Foundation 4.1.13+
+- ARCore XR Plugin 4.1.13+
+- Android API Level 24+
+- ARCore-compatible device
+- **Vulkan graphics API enabled** (for TSDF)
+- Samsung S24 or similar (with depth API support)
 
 ## License
 
