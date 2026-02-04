@@ -125,11 +125,11 @@ Shader "Custom/TSDFVolumeIntegration2D"
                 // Normalize
                 sdf = clamp(sdf / _TruncDist, -1.0, 1.0);
                 
-                // Weighted average
+                // Weighted average (reduced new weight for stability)
                 float prevSDF = tex2D(_PrevTSDF, i.uv).r;
                 float prevWeight = tex2D(_PrevWeight, i.uv).r;
-                float newWeight = 1.0;
-                float totalWeight = min(prevWeight + newWeight, 100.0);
+                float newWeight = 0.3; // Reduced from 1.0 to prioritize existing values
+                float totalWeight = min(prevWeight + newWeight, 200.0); // Increased max for more stability
                 float updatedSDF = (prevSDF * prevWeight + sdf * newWeight) / totalWeight;
                 
                 return float4(updatedSDF, 0, 0, 1);

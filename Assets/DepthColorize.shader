@@ -124,8 +124,21 @@ Shader "Custom/DepthColorize"
                 // Sample camera feed
                 fixed4 cameraColor = tex2D(_MainTex, i.uv);
                 
-                // Sample depth
-                float depth = tex2D(_EnvironmentDepth, i.uv).r;
+                // For depth sampling, detect orientation and adjust UV accordingly
+                float2 depthUV = i.uv;
+                
+                // Check if we're in portrait mode
+                float aspectRatio = _ScreenParams.x / _ScreenParams.y;
+                if (aspectRatio < 1.0)
+                {
+                    // Portrait mode - rotate depth UV 90 degrees
+                    float2 centered = depthUV - 0.5;
+                    depthUV.x = -centered.y + 0.5;
+                    depthUV.y = centered.x + 0.5;
+                }
+                
+                // Sample depth with orientation-corrected UV
+                float depth = tex2D(_EnvironmentDepth, depthUV).r;
                 
                 // If depth is too small (no valid depth), return camera feed only
                 if (depth < 0.01)
@@ -133,15 +146,15 @@ Shader "Custom/DepthColorize"
                     return cameraColor;
                 }
                 
-                // Calculate surface normal from depth gradients
-                float3 normal = CalculateNormalFromDepth(i.uv);
+                // Calculate surface normal from depth gradients (using corrected UV)
+                float3 normal = CalculateNormalFromDepth(depthUV);
                 
                 // Get depth-based color gradient
                 float3 depthColor = DepthToRGB(depth);
                 
                 // Detect edges by checking depth discontinuities
-                float depthRight = tex2D(_EnvironmentDepth, i.uv + float2(_EnvironmentDepth_TexelSize.x, 0)).r;
-                float depthDown = tex2D(_EnvironmentDepth, i.uv + float2(0, _EnvironmentDepth_TexelSize.y)).r;
+                float depthRight = tex2D(_EnvironmentDepth, depthUV + float2(_EnvironmentDepth_TexelSize.x, 0)).r;
+                float depthDown = tex2D(_EnvironmentDepth, depthUV + float2(0, _EnvironmentDepth_TexelSize.y)).r;
                 float edgeStrength = abs(depth - depthRight) + abs(depth - depthDown);
                 edgeStrength = saturate(edgeStrength * 50.0); // Scale and clamp to 0-1
                 
