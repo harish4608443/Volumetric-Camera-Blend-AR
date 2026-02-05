@@ -16,7 +16,7 @@ public class TSDFVolumeAtlas : MonoBehaviour
     public ARCameraBackground cameraBackground;
     
     [Header("Volume Settings")]
-    public Vector3Int volumeResolution = new Vector3Int(64, 64, 64);
+    public Vector3Int volumeResolution = new Vector3Int(128, 128, 128);  // Increased for testing
     public float voxelSize = 0.05f;
     public float truncationDistance = 0.2f;
     public float maxDepth = 5.0f;
@@ -53,6 +53,11 @@ public class TSDFVolumeAtlas : MonoBehaviour
     private int frameCount = 0;
     private Vector3 volumeOrigin;
     private int atlasWidth, atlasHeight;
+    
+    // Performance monitoring
+    private float lastMemoryCheckTime = 0f;
+    private float lastFPSCheckTime = 0f;
+    private int fpsFrameCount = 0;
     
     void Start()
     {
@@ -109,6 +114,16 @@ public class TSDFVolumeAtlas : MonoBehaviour
         
         Debug.Log($"   Volume: {volumeResolution}, Voxel: {voxelSize}m");
         Debug.Log($"   Atlas: {atlasWidth}x{atlasHeight} (packing {volumeResolution.z} slices)");
+        
+        // Calculate memory requirements
+        float atlasMemoryMB = (atlasWidth * atlasHeight * 4f) / (1024f * 1024f);  // 4 bytes per pixel for RFloat
+        float totalMemoryMB = atlasMemoryMB * 4f;  // 4 atlases (TSDF + Weight, ping-pong)
+        Debug.Log($"   Estimated Memory: {totalMemoryMB:F2} MB ({atlasMemoryMB:F2} MB per atlas)");
+        Debug.Log($"   Total Voxels: {volumeResolution.x * volumeResolution.y * volumeResolution.z:N0}");
+        
+        // Check available memory
+        long totalRAM = SystemInfo.systemMemorySize;
+        Debug.Log($"   System RAM: {totalRAM} MB");
         
         // Create atlas textures
         tsdfAtlas = CreateAtlas("TSDF Atlas", new Color(1, 0, 0, 1));
@@ -193,11 +208,31 @@ public class TSDFVolumeAtlas : MonoBehaviour
         if (frameCount == 1)
         {
             Debug.Log("[TSDF] ▶ Integration active (silent background mode)");
+            lastMemoryCheckTime = Time.realtimeSinceStartup;
+            lastFPSCheckTime = Time.realtimeSinceStartup;
         }
         
         if (frameCount % integrationInterval == 0)
         {
             IntegrateDepth();
+        }
+        
+        // FPS monitoring every second
+        fpsFrameCount++;
+        float currentTime = Time.realtimeSinceStartup;
+        if (currentTime - lastFPSCheckTime >= 1.0f)
+        {
+            float fps = fpsFrameCount / (currentTime - lastFPSCheckTime);
+            Debug.Log($"[TSDF] FPS: {fps:F1}, Frame: {frameCount}");
+            fpsFrameCount = 0;
+            lastFPSCheckTime = currentTime;
+        }
+        
+        // Memory monitoring every 5 seconds
+        if (currentTime - lastMemoryCheckTime >= 5.0f)
+        {
+            LogMemoryUsage();
+            lastMemoryCheckTime = currentTime;
         }
         
         if (frameCount == 30 || frameCount == 60)
@@ -256,7 +291,38 @@ public class TSDFVolumeAtlas : MonoBehaviour
         if (frameCount % 150 == 0)
         {
             Debug.Log($"[TSDF] Frame {frameCount / integrationInterval} integrated");
+            Debug.Log($"[TSDF] Integration time: {Time.realtimeSinceStartup:F2}s");
         }
+    }
+    
+    void LogMemoryUsage()
+    {
+        // Get current memory usage
+        long totalMemory = System.GC.GetTotalMemory(false);
+        float totalMemoryMB = totalMemory / (1024f * 1024f);
+        
+        // Get Unity memory usage
+        long monoHeap = UnityEngine.Profiling.Profiler.GetMonoHeapSizeLong();
+        long monoUsed = UnityEngine.Profiling.Profiler.GetMonoUsedSizeLong();
+        float monoHeapMB = monoHeap / (1024f * 1024f);
+        float monoUsedMB = monoUsed / (1024f * 1024f);
+        
+        // Get texture memory
+        long totalAllocatedMemory = UnityEngine.Profiling.Profiler.GetTotalAllocatedMemoryLong();
+        long totalReservedMemory = UnityEngine.Profiling.Profiler.GetTotalReservedMemoryLong();
+        float allocatedMB = totalAllocatedMemory / (1024f * 1024f);
+        float reservedMB = totalReservedMemory / (1024f * 1024f);
+        
+        Debug.Log($"═══════════════════════════════════════════════════");
+        Debug.Log($"   MEMORY USAGE (Frame {frameCount})");
+        Debug.Log($"═══════════════════════════════════════════════════");
+        Debug.Log($"GC Total: {totalMemoryMB:F2} MB");
+        Debug.Log($"Mono Heap: {monoUsedMB:F2} / {monoHeapMB:F2} MB");
+        Debug.Log($"Unity Allocated: {allocatedMB:F2} MB");
+        Debug.Log($"Unity Reserved: {reservedMB:F2} MB");
+        Debug.Log($"Atlas Size: {atlasWidth}x{atlasHeight}");
+        Debug.Log($"Voxel Count: {volumeResolution.x * volumeResolution.y * volumeResolution.z:N0}");
+        Debug.Log($"═══════════════════════════════════════════════════");
     }
     
     void UpdateRayMarching()

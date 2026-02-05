@@ -611,7 +611,7 @@ MonoBehaviour:
   occlusionManager: {fileID: 1863820475}
   cameraManager: {fileID: 1863820477}
   cameraBackground: {fileID: 1863820476}
-  volumeResolution: {x: 64, y: 64, z: 64}
+  volumeResolution: {x: 128, y: 128, z: 128}
   voxelSize: 0.05
   truncationDistance: 0.2
   maxDepth: 5
