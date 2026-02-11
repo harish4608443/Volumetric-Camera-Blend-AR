@@ -436,6 +436,8 @@ GameObject:
   - component: {fileID: 1863820474}
   - component: {fileID: 1863820483}
   - component: {fileID: 1863820484}
+  - component: {fileID: 1863820482}
+  - component: {fileID: 1863820481}
   - component: {fileID: 1863820485}
   m_Layer: 0
   m_Name: AR Camera
@@ -510,6 +512,7 @@ MonoBehaviour:
   planeVisibilityBoost: 0.8
   showDebugInfo: 1
   showVolumetricOnly: 0
+  disableDepthColorizer: 1
   depthColorizeShader: {fileID: 4800000, guid: 876642ec74274fa4b84a06d86529f06f, type: 3}
   colorIntensity: 0.7
   normalStrength: 1
@@ -596,6 +599,63 @@ Transform:
   m_Father: {fileID: 748656572}
   m_RootOrder: 0
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &1863820481
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1863820472}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 520bb47c46cf8624fafb307b7d1b862a, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  m_Camera: {fileID: 0}
+--- !u!114 &1863820482
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1863820472}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: b99119038ecd5dd42991861f6c4d8609, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  enableStripes: 1
+  showCameraUntilScanned: 0
+  enablePointCloudRendering: 0
+  forceFullOverlay: 0
+  incompleteThreshold: 2.0
+  enableObjectDetection: 1
+  yoloModel: {fileID: 5022602860645237092, guid: 45287b94cc9c3934a87a3ca071497807, type: 3}
+  minConfidence: 0.15
+  detectionInterval: 7
+  minBoxSize: 15
+  cameraDownscale: 0.25
+  skipBoxVisualization: 1
+  boxColors:
+  - {r: 1, g: 0, b: 0, a: 0.5}
+  - {r: 0, g: 1, b: 0, a: 0.5}
+  - {r: 0, g: 0, b: 1, a: 0.5}
+  - {r: 0, g: 1, b: 1, a: 0.5}
+  - {r: 1, g: 0, b: 1, a: 0.5}
+  - {r: 1, g: 1, b: 0, a: 0.5}
+  boxThickness: 3
+  flipHorizontal: 0
+  labelScale: 4
+  showLabelBackground: 1
+  labelBgOpacity: 0.6
+  verboseLogs: 1
+  enableSpheres: 1
+  spherePrefab: {fileID: 0}
+  sphereLifetime: 2
+  fallbackDepth: 1.5
+  useDepthFallback: 0
+  fadeAfterSeconds: 0.5
+  fadeDuration: 0.5
 --- !u!114 &1863820483
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -641,13 +701,14 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1863820472}
-  m_Enabled: 0
+  m_Enabled: 1
   m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: fadcf2a57e875ec4e9dbccfe48dcc410, type: 3}
+  m_Script: {fileID: 11500000, guid: d809f39d79aadbe489f8ed2e4df54dcc, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  tsdfVolume: {fileID: 1863820483}
-  stepSize: 0.02
-  maxSteps: 128
-  surfaceThreshold: 0.03
-  volumeOpacity: 0.6
+  tsdfAtlas: {fileID: 0}
+  tsdfRayMarchShader: {fileID: 4800000, guid: ea648687c4ca3df4ebf47727667b2855, type: 3}
+  minWeight: 1
+  stepSize: 0.03
+  maxSteps: 256
+  enableRendering: 1

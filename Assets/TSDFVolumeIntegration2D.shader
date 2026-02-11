@@ -60,7 +60,7 @@ Shader "Custom/TSDFVolumeIntegration2D"
                 int sliceY = (int)(uv.y * ceil(_VolumeResolution.z / _SlicesPerRow));
                 int z = sliceY * _SlicesPerRow + sliceX;
                 
-                float2 localUV = frac(uv * float2(_SlicesPerRow, ceil(_VolumeResolution.z / _SlicesPerRow)));
+                float2 localUV = frac(uv * float2(_SlicesPerRow, ceil(_VolumeResolution.z / _SlicesPerRow)) );
                 int x = (int)(localUV.x * _VolumeResolution.x);
                 int y = (int)(localUV.y * _VolumeResolution.y);
                 

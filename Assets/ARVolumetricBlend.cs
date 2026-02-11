@@ -52,6 +52,9 @@ public class ARVolumetricBlend : MonoBehaviour
     [Tooltip("Show only volumetric texture (no blend)")]
     public bool showVolumetricOnly = false;
     
+    [Tooltip("Disable depth colorizer rendering (use when ARCombinedOverlay is active)")]
+    public bool disableDepthColorizer = false;
+    
     private int planeCount = 0;
     private string lastPlaneInfo = "No planes detected";
 
@@ -194,6 +197,13 @@ public class ARVolumetricBlend : MonoBehaviour
     private void LateUpdate()
     {
         if (commandBuffer == null || depthMaterial == null) return;
+        
+        // Skip rendering if disabled
+        if (disableDepthColorizer)
+        {
+            commandBuffer.Clear();
+            return;
+        }
         
         // Get depth texture
         Texture depthTexture = null;

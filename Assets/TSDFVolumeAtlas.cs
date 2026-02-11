@@ -44,7 +44,75 @@ public class TSDFVolumeAtlas : MonoBehaviour
     
     // Public API for ray marching
     public RenderTexture GetTSDFAtlas() { return tsdfAtlas; }
+    public RenderTexture GetWeightAtlas() { return weightAtlas; }
     public Vector3 volumeCenter { get { return volumeOrigin; } }
+    public Vector3Int GetVolumeResolution() { return volumeResolution; }
+    public float GetVoxelSize() { return voxelSize; }
+    public int GetSlicesPerRow() { return Mathf.CeilToInt(Mathf.Sqrt(volumeResolution.z)); }
+    
+    /// <summary>
+    /// Sample TSDF value at a world position. Returns distance to nearest surface (negative = inside object).
+    /// </summary>
+    public float SampleTSDFAtWorldPosition(Vector3 worldPos)
+    {
+        // Transform world position to volume local space
+        Vector3 localPos = worldPos - volumeOrigin;
+        
+        // Convert to voxel coordinates
+        Vector3 voxelPos = localPos / voxelSize;
+        voxelPos += (Vector3)volumeResolution * 0.5f; // Center offset
+        
+        // Check bounds
+        if (voxelPos.x < 0 || voxelPos.x >= volumeResolution.x ||
+            voxelPos.y < 0 || voxelPos.y >= volumeResolution.y ||
+            voxelPos.z < 0 || voxelPos.z >= volumeResolution.z)
+        {
+            return 1.0f; // Outside volume = far from surface
+        }
+        
+        // Sample via CPU readback (slow but works for occasional queries)
+        // For real-time, would use compute shader
+        return SampleTSDFViaCPU(voxelPos);
+    }
+    
+    /// <summary>
+    /// Sample weight at a world position. Higher weight = more reliable data.
+    /// </summary>
+    public float SampleWeightAtWorldPosition(Vector3 worldPos)
+    {
+        // Transform world position to volume local space
+        Vector3 localPos = worldPos - volumeOrigin;
+        
+        // Convert to voxel coordinates
+        Vector3 voxelPos = localPos / voxelSize;
+        voxelPos += (Vector3)volumeResolution * 0.5f; // Center offset
+        
+        // Check bounds
+        if (voxelPos.x < 0 || voxelPos.x >= volumeResolution.x ||
+            voxelPos.y < 0 || voxelPos.y >= volumeResolution.y ||
+            voxelPos.z < 0 || voxelPos.z >= volumeResolution.z)
+        {
+            return 0f; // Outside volume = no data
+        }
+        
+        // Sample via CPU readback
+        return SampleWeightViaCPU(voxelPos);
+    }
+    
+    private float SampleTSDFViaCPU(Vector3 voxelPos)
+    {
+        // TODO: Implement CPU readback - requires RenderTexture.active approach
+        // For now return placeholder (requires GPU->CPU copy which is slow)
+        // In production, use compute shader for GPU-side sampling
+        return 1.0f; // Placeholder - assume far from surface
+    }
+    
+    private float SampleWeightViaCPU(Vector3 voxelPos)
+    {
+        // TODO: Implement CPU readback
+        // For now return low weight (unreliable)
+        return 0f;
+    }
     
     private Material integrationMaterial;
     private Material rayMarchMaterial;
