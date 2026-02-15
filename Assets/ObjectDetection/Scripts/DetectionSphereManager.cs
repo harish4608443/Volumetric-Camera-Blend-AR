@@ -44,7 +44,7 @@ public class DetectionSphereManager : MonoBehaviour
     private RenderTexture sphereRenderTexture;
     private Material sphereCompositeMaterial;
     private GameObject sphereCameraObj;
-    private const int SPHERE_LAYER = 0;  // Use default layer for direct AR camera rendering // Layer for sphere objects
+    private const int SPHERE_LAYER = 8;  // Layer 8 for sphere-only rendering (prevents seeing through spheres)
     private const string SPHERE_LAYER_NAME = "Spheres";
     
     [Header("Sphere Tracking")]
@@ -132,6 +132,13 @@ public class DetectionSphereManager : MonoBehaviour
             Debug.Log("[RAYCAST] ARRaycastManager found - available as fallback");
         }
         
+        // CRITICAL: AR camera must NOT render sphere layer (dedicated sphereCamera handles that)
+        if (arCamera != null)
+        {
+            arCamera.cullingMask &= ~(1 << SPHERE_LAYER); // Exclude sphere layer from AR camera
+            Debug.Log($"✅ AR camera culling mask updated to exclude layer {SPHERE_LAYER}");
+        }
+        
         // Log occlusion manager state
         Debug.Log($"[DEPTH] AROcclusionManager found: enabled={occlusionManager.enabled}");
         Debug.Log($"[DEPTH] Environment depth mode: {occlusionManager.requestedEnvironmentDepthMode}");
@@ -205,7 +212,13 @@ public class DetectionSphereManager : MonoBehaviour
     {
         if (!enableSpheres) return;
         
-        // Spheres render directly on Layer 0 - no camera sync needed
+        // Sync sphere camera with AR camera transform
+        if (sphereCamera != null && arCamera != null)
+        {
+            sphereCamera.transform.position = arCamera.transform.position;
+            sphereCamera.transform.rotation = arCamera.transform.rotation;
+            sphereCamera.fieldOfView = arCamera.fieldOfView;
+        }
         
         // Remove oldest spheres if we have too many (keep recent ones)
         if (activeSpheres.Count > 30)
@@ -273,8 +286,9 @@ public class DetectionSphereManager : MonoBehaviour
     
     /// <summary>
     /// Check if a screen position is inside or near an existing sphere (screen space check).
+    /// Prevents detecting objects through transparent spheres (mirroring/reflection issue).
     /// </summary>
-    private bool IsPositionCoveredBySphere(Vector2 screenPos, string classLabel, float radiusMargin = 1.2f)
+    private bool IsPositionCoveredBySphere(Vector2 screenPos, string classLabel, float radiusMargin = 1.8f)
     {
         foreach (var sphere in activeSpheres)
         {
@@ -292,12 +306,15 @@ public class DetectionSphereManager : MonoBehaviour
             // Calculate screen-space distance
             float screenDist = Vector2.Distance(new Vector2(screenPoint.x, screenPoint.y), screenPos);
             
-            // Sphere's screen-space radius (approximate)
-            float screenRadius = (sphere.radius / screenPoint.z) * arCamera.pixelHeight * 0.5f;
+            // Sphere's screen-space radius (FOV-corrected projection)
+            // Formula: screenRadius = (worldRadius / depth) * (screenHeight / 2) / tan(FOV/2)
+            float fovFactor = arCamera.fieldOfView * Mathf.Deg2Rad * 0.5f;
+            float screenRadius = (sphere.radius / screenPoint.z) * (Screen.height * 0.5f) / Mathf.Tan(fovFactor);
             
-            // Check if detection is within sphere's screen projection (with margin)
+            // Check if detection is within sphere's screen projection (with LARGE margin to block mirror detections)
             if (screenDist < screenRadius * radiusMargin)
             {
+                Debug.Log($"🚫 Position {screenPos} blocked by existing sphere at screen {screenPoint.x:F0},{screenPoint.y:F0} (dist={screenDist:F0}, radius={screenRadius:F0}, margin={radiusMargin})");
                 return true; // Position covered by existing sphere
             }
         }
@@ -334,53 +351,32 @@ public class DetectionSphereManager : MonoBehaviour
             return;
         }
         
-        // Get depth at this position - priority: Direct TryAcquire > Raycast > Fallback
+        // Get depth at this position - priority: ARCore depth > TSDF > skip sphere
         float depth = -1f;
         
-        // Priority 1: Try TSDF depth (if enabled)
-        if (useTSDFDepth && tsdfVolume != null)
+        // Priority 1: Try direct ARCore depth acquisition (PREFERRED)
+        depth = GetDepthAtScreenPosition(screenPos, screenWidth, screenHeight);
+        bool usedARCoreDepth = (depth > 0f && depth < 10f);
+        if (usedARCoreDepth)
+        {
+            Debug.Log($"✅ ARCore depth: {depth:F2}m at screen {screenPos}");
+        }
+        
+        // Priority 2: Try TSDF depth if ARCore depth unavailable (FALLBACK)
+        if (!usedARCoreDepth && useTSDFDepth && tsdfVolume != null)
         {
             depth = GetDepthFromTSDF(screenPos, screenWidth, screenHeight);
             if (depth > 0f && depth < 10f)
             {
-                Debug.Log($"📊 Using TSDF depth {depth:F2}m at screen {screenPos}");
+                Debug.Log($"📊 Using TSDF fallback depth {depth:F2}m at screen {screenPos}");
             }
         }
         
-        // Priority 2: Try direct ARCore depth acquisition
+        // Priority 3: Skip sphere creation if no valid depth found (NO OTHER FALLBACKS)
         if (depth <= 0f || depth > 10f)
         {
-            depth = GetDepthAtScreenPosition(screenPos, screenWidth, screenHeight);
-            bool usedARCoreDepth = (depth > 0f && depth < 10f);
-            if (usedARCoreDepth)
-            {
-                Debug.Log($"✅ ARCore depth: {depth:F2}m at screen {screenPos}");
-            }
-        }
-        
-        // Priority 3: Try AR raycasting to find actual surface
-        if (depth <= 0f || depth > 10f)
-        {
-            depth = GetDepthViaRaycast(screenPos);
-            if (depth > 0f && depth < 10f)
-            {
-                Debug.Log($"🎯 Using raycast depth {depth:F2}m at screen {screenPos} (ARCore unavailable)");
-            }
-        }
-        
-        // Priority 4: Skip sphere creation if no valid depth found
-        if (depth <= 0f || depth > 10f)
-        {
-            if (useDepthFallback)
-            {
-                depth = fallbackDepth;
-                Debug.LogWarning($"⚠️ Using fallback depth {depth}m at {screenPos} - may be inaccurate!");
-            }
-            else
-            {
-                Debug.Log($"⏭️ No valid depth ({depth:F2}m) at {screenPos}, skipping sphere (prevents random placement)");
-                return;
-            }
+            Debug.Log($"⏭️ No valid depth ({depth:F2}m) at {screenPos} from ARCore or TSDF, skipping sphere (prevents inaccurate placement)");
+            return;
         }
         
         // Convert screen position + depth to world position
@@ -410,15 +406,17 @@ public class DetectionSphereManager : MonoBehaviour
         // Calculate sphere scale - use bbox dimensions directly
         float sphereDiameter = CalculateSphereScale(detection.rect.width, detection.rect.height, depth);
         
-        // Create detection bounding box for overlap checking
-        Rect screenBounds = new Rect(detection.rect.x, detection.rect.y, detection.rect.width, detection.rect.height);
-        
-        // CRITICAL: Check if this detection's screen position overlaps with existing sphere (prevents duplicates)
-        if (IsDetectionOverlapping(screenBounds, detection.bestClassIndex.ToString()))
+        // CRITICAL: Check if this detection's world position overlaps with existing sphere (prevents duplicates)
+        // World space checking is more reliable than screen space as it's invariant to camera movement
+        if (IsDetectionOverlapping(worldPos, sphereDiameter, detection.bestClassIndex.ToString()))
         {
-            Debug.Log($"⏭️ Skipping duplicate sphere - bbox {screenBounds} overlaps with existing sphere of class {detection.bestClassIndex}");
+            Debug.Log($"⏭️ Skipping duplicate sphere - world pos {worldPos} too close to existing sphere of class {detection.bestClassIndex}");
             return;
         }
+        
+        // Create detection bounding box for sphere tracking (not used for overlap anymore)
+        Rect screenBounds = new Rect(screenPos.x - sphereDiameter * 0.5f, screenPos.y - sphereDiameter * 0.5f, 
+                                     sphereDiameter, sphereDiameter);
         
         // Create sphere primitive at detected object
         GameObject sphere = CreateSphere(worldPos, sphereDiameter, detection);
@@ -434,28 +432,28 @@ public class DetectionSphereManager : MonoBehaviour
     }
     
     /// <summary>
-    /// Check if a detection bounding box overlaps with existing spheres of the same class.
-    /// More accurate than point-based checking for preventing duplicates.
+    /// Check if a detection's world position is too close to existing spheres of the same class.
+    /// Uses world space distance to prevent duplicates (more reliable than screen space as camera moves).
     /// </summary>
-    private bool IsDetectionOverlapping(Rect detectionBounds, string className)
+    private bool IsDetectionOverlapping(Vector3 worldPos, float detectedDiameter, string className)
     {
         foreach (var sphere in activeSpheres)
         {
+            if (sphere.gameObject == null) continue;
+            
+            // Only check spheres of same class
             if (sphere.classLabel == className)
             {
-                // Check IOU (intersection over union) of bounding boxes
-                if (sphere.screenBounds.Overlaps(detectionBounds))
+                // Calculate world space distance between detection and existing sphere
+                float distance = Vector3.Distance(worldPos, sphere.worldPosition);
+                
+                // Combine radii for overlap threshold (with 30% margin)
+                float combinedRadius = (sphere.radius + detectedDiameter * 0.5f) * 1.3f;
+                
+                if (distance < combinedRadius)
                 {
-                    float intersectArea = Mathf.Max(0, Mathf.Min(sphere.screenBounds.xMax, detectionBounds.xMax) - Mathf.Max(sphere.screenBounds.xMin, detectionBounds.xMin)) *
-                                         Mathf.Max(0, Mathf.Min(sphere.screenBounds.yMax, detectionBounds.yMax) - Mathf.Max(sphere.screenBounds.yMin, detectionBounds.yMin));
-                    float unionArea = sphere.screenBounds.width * sphere.screenBounds.height + detectionBounds.width * detectionBounds.height - intersectArea;
-                    float iou = intersectArea / unionArea;
-                    
-                    if (iou > 0.3f) // 30% overlap threshold
-                    {
-                        Debug.Log($"Overlap detected: IOU={iou:F2} between new detection and existing sphere");
-                        return true;
-                    }
+                    Debug.Log($"🚫 Overlap detected: distance={distance:F2}m < threshold={combinedRadius:F2}m (world space check)");
+                    return true;
                 }
             }
         }
@@ -692,36 +690,75 @@ public class DetectionSphereManager : MonoBehaviour
         
         if (spherePrefab != null)
         {
-            // Use provided prefab - NO PARENT to keep sphere fixed in world space
+            // Use provided prefab with Meta's barycentric wireframe approach
             sphere = Instantiate(spherePrefab, worldPos, Quaternion.identity, null);
-            // DO NOT parent to sphereContainer - spheres must stay at world coordinates
-            
             sphere.layer = SPHERE_LAYER;
+            Debug.Log($"🔵 [SPHERE PREFAB] Created at {worldPos}, layer={sphere.layer}, active={sphere.activeSelf}");
             
-            // Semi-transparent cyan fill + cyan wireframe (like old ARCombinedOverlay)
+            // IMPORTANT: Apply material FIRST before adding CoverageSphereFaceHider
+            // The FaceHider component runs Awake() immediately and needs the material ready
             var renderer = sphere.GetComponent<Renderer>();
             if (renderer != null)
             {
-                // Use Sprites/Default shader - always included and supports alpha
-                Material mat = new Material(Shader.Find("Sprites/Default"));
-                mat.color = new Color(0.0f, 0.71f, 0.78f, 0.4f); // IntelliCap cyan, 40% alpha
-                mat.renderQueue = 3000; // Render before wireframe (which is at 4000)
-                renderer.material = mat;
-                renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-                renderer.receiveShadows = false;
-                Debug.Log($"[SPHERE PREFAB] Sprites/Default shader, Cyan R=0.0, G=0.71, B=0.78, A=0.4");
-            }
-            else
-            {
-                Debug.LogError("[SPHERE PREFAB] No renderer found on sphere!");
+                Material mat = null;
+                
+                // Try loading shader from Resources first
+                Shader wireframeShader = Resources.Load<Shader>("Shaders/VertexColorWireframeTransparent");
+                
+                if (wireframeShader == null)
+                {
+                    wireframeShader = Shader.Find("Custom/VertexColorWireframeTransparent");
+                }
+                
+                if (wireframeShader != null)
+                {
+                    mat = new Material(wireframeShader);
+                    mat.SetColor("_WireColor", new Color(0.0f, 1.0f, 1.0f, 1.0f)); // Bright cyan for wireframe
+                    mat.SetFloat("_WireThickness", 1.2f);
+                    mat.SetFloat("_WireAlpha", 0.8f);
+                    Debug.Log($"[SPHERE PREFAB] Wireframe shader loaded (cyan)");
+                }
+                else
+                {
+                    Debug.LogWarning("[SPHERE PREFAB] Wireframe shader not found, using Sprites/Default fallback");
+                    
+                    // Sprites/Default is ALWAYS included in Android builds
+                    Shader fallback = Shader.Find("Sprites/Default");
+                    if (fallback != null)
+                    {
+                        mat = new Material(fallback);
+                        mat.color = new Color(0.0f, 1.0f, 1.0f, 0.6f); // Bright cyan with 60% alpha
+                    }
+                    else
+                    {
+                        Debug.LogError("[SPHERE PREFAB] Even Sprites/Default not found! Creating default material");
+                        mat = new Material(Shader.Find("Standard"));
+                        mat.color = new Color(0.0f, 1.0f, 1.0f, 0.7f); // Bright cyan with 70% alpha
+                    }
+                }
+                
+                if (mat != null)
+                {
+                    renderer.material = mat;
+                    renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+                    renderer.receiveShadows = false;
+                }
             }
             
-            // Add wireframe with IntelliCap cyan color
-            var wireframe = sphere.AddComponent<WireframeDrawer>();
-            if (wireframe != null)
+            // NOW add components that process the mesh
+            // Add CoverageSphereInfo to store radius
+            var sphereInfo = sphere.GetComponent<CoverageSphereInfo>();
+            if (sphereInfo == null)
             {
-                wireframe.SetColor(new Color(0.0f, 0.71f, 0.78f, 1.0f));  // IntelliCap cyan #00B5C7, full opacity
-                Debug.Log($"[SPHERE] Wireframe added with IntelliCap cyan: R=0.0, G=0.71, B=0.78, A=1.0");
+                sphereInfo = sphere.AddComponent<CoverageSphereInfo>();
+            }
+            sphereInfo.Radius = scale * 0.5f; // scale is diameter, radius is half
+            
+            // Add CoverageSphereFaceHider for look-to-hide functionality (runs Awake() when added)
+            var faceHider = sphere.GetComponent<CoverageSphereFaceHider>();
+            if (faceHider == null)
+            {
+                faceHider = sphere.AddComponent<CoverageSphereFaceHider>();
             }
         }
         else
@@ -738,6 +775,7 @@ public class DetectionSphereManager : MonoBehaviour
                 
                 sphere.transform.position = worldPos;
                 sphere.layer = SPHERE_LAYER;
+                Debug.Log($"🔵 [SPHERE ICOSPHERE] Created at {worldPos}, layer={sphere.layer}, active={sphere.activeSelf}");
                 
                 // Verify mesh is valid
                 var meshFilter = sphere.GetComponent<MeshFilter>();
@@ -773,35 +811,73 @@ public class DetectionSphereManager : MonoBehaviour
                 Destroy(collider);
             }
             
-            // Semi-transparent cyan fill + cyan wireframe (like old ARCombinedOverlay)
+            // IMPORTANT: Apply material FIRST before adding CoverageSphereFaceHider
+            // The FaceHider component runs Awake() immediately and needs the material ready
             var renderer = sphere.GetComponent<Renderer>();
             if (renderer != null)
             {
-                // Use Sprites/Default shader - always included and supports alpha
-                Material mat = new Material(Shader.Find("Sprites/Default"));
-                mat.color = new Color(0.0f, 0.71f, 0.78f, 0.4f); // IntelliCap cyan, 40% alpha
-                mat.renderQueue = 3000; // Render before wireframe (which is at 4000)
-                renderer.material = mat;
-                renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-                renderer.receiveShadows = false;
-                Debug.Log($"[SPHERE ICOSPHERE] Sprites/Default shader, Cyan R=0.0, G=0.71, B=0.78, A=0.4");
+                Material mat = null;
+                
+                // Try loading shader from Resources first
+                Shader wireframeShader = Resources.Load<Shader>("Shaders/VertexColorWireframeTransparent");
+                
+                if (wireframeShader == null)
+                {
+                    wireframeShader = Shader.Find("Custom/VertexColorWireframeTransparent");
+                }
+                
+                if (wireframeShader != null)
+                {
+                    mat = new Material(wireframeShader);
+                    mat.SetColor("_WireColor", new Color(0.0f, 1.0f, 1.0f, 1.0f)); // Bright cyan for wireframe
+                    mat.SetFloat("_WireThickness", 1.2f);
+                    mat.SetFloat("_WireAlpha", 0.8f);
+                    Debug.Log($"[SPHERE ICOSPHERE] Wireframe shader loaded (cyan)");
+                }
+                else
+                {
+                    Debug.LogWarning("[SPHERE ICOSPHERE] Wireframe shader not found, using Sprites/Default fallback");
+                    
+                    // Sprites/Default is ALWAYS included in Android builds
+                    Shader fallback = Shader.Find("Sprites/Default");
+                    if (fallback != null)
+                    {
+                        mat = new Material(fallback);
+                        mat.color = new Color(0.0f, 1.0f, 1.0f, 0.6f); // Bright cyan with 60% alpha
+                    }
+                    else
+                    {
+                        Debug.LogError("[SPHERE ICOSPHERE] Even Sprites/Default not found! Creating default material");
+                        mat = new Material(Shader.Find("Standard"));
+                        mat.color = new Color(0.0f, 1.0f, 1.0f, 0.7f); // Bright cyan with 70% alpha
+                    }
+                }
+                
+                if (mat != null)
+                {
+                    renderer.material = mat;
+                    renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+                    renderer.receiveShadows = false;
+                }
             }
             else
             {
                 Debug.LogError("[SPHERE ICOSPHERE] No renderer found on sphere!");
             }
             
-            // Add wireframe with IntelliCap cyan color
-            var wireframe = sphere.AddComponent<WireframeDrawer>();
-            if (wireframe != null)
-            {
-                wireframe.SetColor(new Color(0.0f, 0.71f, 0.78f, 1.0f));  // IntelliCap cyan #00B5C7, full opacity
-                Debug.Log($"[SPHERE] Wireframe added with IntelliCap cyan: R=0.0, G=0.71, B=0.78, A=1.0");
-            }
+            // NOW add components that process the mesh
+            // Add CoverageSphereInfo to store radius
+            var sphereInfo = sphere.AddComponent<CoverageSphereInfo>();
+            sphereInfo.Radius = scale * 0.5f; // scale is diameter, radius is half
+            
+            // Add CoverageSphereFaceHider for look-to-hide functionality (runs Awake() when added)
+            var faceHider = sphere.AddComponent<CoverageSphereFaceHider>();
         }
         
         sphere.name = $"Sphere_{sphereCounter:D3}_{detection.bestClassIndex}";
         sphere.transform.localScale = Vector3.one * scale;
+        Debug.Log($"✅ SPHERE CREATED: {sphere.name} at world {worldPos}, scale {scale:F2}, layer {sphere.layer}");
+        
         
         return sphere;
     }
@@ -839,22 +915,73 @@ public class DetectionSphereManager : MonoBehaviour
     }
     
     /// <summary>
-    /// Setup sphere rendering - using default layer for direct visibility.
+    /// Setup sphere rendering camera and compositor shader.
+    /// Renders spheres to separate layer, then composites with GREEN→blue conversion.
     /// </summary>
     private void SetupSphereCamera()
     {
-        // Spheres on Layer 0 are directly visible to AR camera - no setup needed
-        Debug.Log($"Spheres using default layer (0) - directly visible to AR camera");
+        // Create sphere camera that renders ONLY sphere layer
+        sphereCameraObj = new GameObject("SphereCamera");
+        sphereCamera = sphereCameraObj.AddComponent<Camera>();
+        
+        // Match AR camera settings
+        sphereCamera.CopyFrom(arCamera);
+        sphereCamera.cullingMask = 1 << SPHERE_LAYER; // Only render sphere layer
+        sphereCamera.clearFlags = CameraClearFlags.SolidColor;
+        sphereCamera.backgroundColor = new Color(0, 0, 0, 0); // Transparent background
+        sphereCamera.depth = arCamera.depth - 1; // Render before AR camera
+        
+        // Create RenderTexture for sphere-only rendering
+        sphereRenderTexture = new RenderTexture(Screen.width, Screen.height, 24, RenderTextureFormat.ARGB32);
+        sphereRenderTexture.name = "SphereRenderTexture";
+        sphereCamera.targetTexture = sphereRenderTexture;
+        
+        // Load compositor shader that converts GREEN→blue        // Try multiple paths
+        Shader compositorShader = Shader.Find("Custom/SphereRendering");
+        if (compositorShader == null)
+        {
+            compositorShader = Resources.Load<Shader>("Shaders/SphereRendering");
+        }
+        
+        if (compositorShader != null)
+        {
+            sphereCompositeMaterial = new Material(compositorShader);
+            Debug.Log("✅ Sphere compositor shader loaded (will convert GREEN→blue)");
+        }
+        else
+        {
+            Debug.LogError("❌ SphereRendering compositor shader not found! Tried: Shader.Find('Custom/SphereRendering') and Resources.Load<Shader>('Shaders/SphereRendering')");
+        }
+        
+        // Sync camera position/rotation with AR camera in Update
+        Debug.Log($"✅ Sphere camera setup complete - Layer {SPHERE_LAYER}, RenderTexture {sphereRenderTexture.width}x{sphereRenderTexture.height}");
     }
     
     /// <summary>
     /// Composite sphere rendering onto AR camera view.
-    /// Called automatically by Unity after camera renders.
+    /// Called BY ARCombinedOverlay during its OnRenderImage.
+    /// Spheres are already BLUE - just alpha blend over background.
     /// </summary>
-    void OnRenderImage(RenderTexture src, RenderTexture dest)
+    public void CompositeSpheres(RenderTexture src, RenderTexture dest)
     {
-        // Spheres on Layer 0 render directly - just pass through
-        Graphics.Blit(src, dest);
+        if (sphereRenderTexture == null)
+        {
+            // No sphere rendering yet, just pass through
+            Graphics.Blit(src, dest);
+            return;
+        }
+        
+        // Use compositor material for proper alpha blending
+        if (sphereCompositeMaterial != null)
+        {
+            sphereCompositeMaterial.SetTexture("_SphereTex", sphereRenderTexture);
+            Graphics.Blit(src, dest, sphereCompositeMaterial);
+        }
+        else
+        {
+            // Fallback: just pass through
+            Graphics.Blit(src, dest);
+        }
     }
     
     /// <summary>

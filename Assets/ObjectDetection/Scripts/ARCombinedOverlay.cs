@@ -226,17 +226,16 @@ public class ARCombinedOverlay : MonoBehaviour
         }
         
         // Initialize sphere manager for 3D visualization
+        // CRITICAL: Attach to AR Camera so OnRenderImage compositing works!
         if (enableSpheres)
         {
-            GameObject sphereManagerObj = new GameObject("SphereManager");
-            sphereManagerObj.transform.parent = transform;
-            sphereManager = sphereManagerObj.AddComponent<DetectionSphereManager>();
+            sphereManager = gameObject.AddComponent<DetectionSphereManager>();
             sphereManager.spherePrefab = spherePrefab;
             sphereManager.enableSpheres = enableSpheres;
             sphereManager.sphereLifetime = sphereLifetime;
             sphereManager.fallbackDepth = fallbackDepth;
             sphereManager.useDepthFallback = useDepthFallback;
-            Debug.Log($"Sphere manager initialized - fallback depth: {fallbackDepth}m, use fallback: {useDepthFallback}");
+            Debug.Log($"✅ Sphere manager attached to AR Camera for compositing - fallback depth: {fallbackDepth}m");
         }
         
         // Initialize YOLO detection
@@ -383,20 +382,30 @@ public class ARCombinedOverlay : MonoBehaviour
             }
         }
         
+        // STEP 1.5: Composite detection spheres (GREEN → blue conversion)
+        if (sphereManager != null)
+        {
+            temp1 = RenderTexture.GetTemporary(src.width, src.height, 0, src.format);
+            sphereManager.CompositeSpheres(current, temp1);
+            current = temp1;
+        }
+        
         // STEP 2: Apply stripe overlay on unscanned areas (camera visible through scanned areas)
         if (enableStripes && blitMaterial != null && stripeTexture != null)
         {
-            temp1 = RenderTexture.GetTemporary(src.width, src.height, 0, src.format);
-            ApplyStripeOverlay(current, temp1);
-            current = temp1;
+            temp2 = RenderTexture.GetTemporary(src.width, src.height, 0, src.format);
+            ApplyStripeOverlay(current, temp2);
+            current = temp2;
         }
         
         // STEP 3: Add detection visualization (boxes and labels) on TOP
         if (enableObjectDetection && !skipBoxVisualization && timedDetections.Count > 0)
         {
-            temp2 = RenderTexture.GetTemporary(src.width, src.height, 0, src.format);
-            DrawDetections(current, temp2);  // Draw on the composite with overlays
-            current = temp2;
+            RenderTexture temp3 = RenderTexture.GetTemporary(src.width, src.height, 0, src.format);
+            DrawDetections(current, temp3);  // Draw on the composite with overlays
+            current = temp3;
+            if (temp2 != null) RenderTexture.ReleaseTemporary(temp2);
+            temp2 = temp3;
         }
         
         // Final output

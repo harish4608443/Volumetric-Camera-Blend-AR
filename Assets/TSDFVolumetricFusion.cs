@@ -16,12 +16,6 @@ public class TSDFVolumetricFusion : MonoBehaviour
     [SerializeField] private float truncationDistance = 0.2f;
     [SerializeField] private float maxDepth = 5.0f;
     
-    [Header("Integration Settings")]
-    [SerializeField] private int integrationInterval = 5;
-    
-    [Header("Visualization")]
-    [SerializeField] private float volumeOpacity = 0.5f;
-    
     // TSDF Atlas Texture (2D representation of 3D volume)
     private RenderTexture tsdfAtlas;
     
@@ -50,60 +44,11 @@ public class TSDFVolumetricFusion : MonoBehaviour
         Debug.Log("         (CommandBuffer blits don't work - use ARVolumetricBlend)");
         Debug.Log("═══════════════════════════════════════════════════════");
         enabled = false;
-        return;
-        
-        // Get AR components
-        arCameraManager = FindObjectOfType<ARCameraManager>();
-        occlusionManager = FindObjectOfType<AROcclusionManager>();
-        mainCamera = GetComponent<Camera>();
-        
-        if (arCameraManager == null || occlusionManager == null)
-        {
-            Debug.LogError("[TSDF] Missing ARCameraManager or AROcclusionManager!");
-            enabled = false;
-            return;
-        }
-        
-        // Ensure depth is enabled
-        if (occlusionManager.requestedEnvironmentDepthMode == EnvironmentDepthMode.Disabled)
-        {
-            occlusionManager.requestedEnvironmentDepthMode = EnvironmentDepthMode.Fastest;
-        }
-        
-        // Initialize TSDF atlas
-        InitializeTSDFAtlas();
-        
-        // Use DepthColorize shader (proven to work)
-        Shader visualizeShader = Shader.Find("Custom/DepthColorize");
-        
-        if (visualizeShader == null)
-        {
-            Debug.LogError($"[TSDF] DepthColorize shader not found!");
-            enabled = false;
-            return;
-        }
-        
-        visualizeMaterial = new Material(visualizeShader);
-        Debug.Log($"[TSDF] Using DepthColorize visualization");
-        
-        // Setup CommandBuffer (proven pattern from ARVolumetricBlend)
-        if (mainCamera.clearFlags == CameraClearFlags.SolidColor)
-        {
-            mainCamera.clearFlags = CameraClearFlags.Depth;
-            Debug.Log("[TSDF] Changed clearFlags to Depth");
-        }
-        
-        commandBuffer = new CommandBuffer { name = "TSDF Visualization" };
-        mainCamera.AddCommandBuffer(CameraEvent.AfterEverything, commandBuffer);
-        
-        previousViewMatrix = mainCamera.worldToCameraMatrix;
-        isInitialized = true;
-        
-        Debug.Log($"[TSDF] Initialized - Volume: {volumeResolution}³, Voxel: {voxelSize}m, Atlas: {atlasSize}");
     }
     
     void InitializeTSDFAtlas()
     {
+        if (!enabled) return;
         tsdfAtlas = new RenderTexture(atlasSize, atlasSize, 0, RenderTextureFormat.ARGBFloat);
         tsdfAtlas.enableRandomWrite = false;
         tsdfAtlas.filterMode = FilterMode.Point;
@@ -135,6 +80,7 @@ public class TSDFVolumetricFusion : MonoBehaviour
     
     void IntegrateDepth()
     {
+        if (!enabled) return;
         var depthTexture = occlusionManager.environmentDepthTexture;
         if (depthTexture == null) return;
         
@@ -181,6 +127,7 @@ public class TSDFVolumetricFusion : MonoBehaviour
     
     void UpdateVisualization()
     {
+        if (!enabled) return;
         // Use proven CommandBuffer pattern from ARVolumetricBlend
         var depthTexture = occlusionManager.environmentDepthTexture;
         if (depthTexture == null) return;
@@ -197,6 +144,8 @@ public class TSDFVolumetricFusion : MonoBehaviour
     
     void OnDestroy()
     {
+        if (!isInitialized) return;
+        
         if (commandBuffer != null && mainCamera != null)
         {
             mainCamera.RemoveCommandBuffer(CameraEvent.AfterEverything, commandBuffer);

@@ -48,8 +48,19 @@ Shader "Custom/SphereRendering"
                 // Sample AR camera background
                 float4 bgColor = tex2D(_MainTex, i.uv);
                 
-                // Sample sphere rendering (already BLUE)
+                // Sample sphere rendering
                 float4 sphereColor = tex2D(_SphereTex, i.uv);
+                
+                // Convert GREEN (0,1,0) → Bright Blue (0,0,1) for small/merged spheres
+                if (sphereColor.g > 0.9 && sphereColor.r < 0.1 && sphereColor.b < 0.1)
+                {
+                    sphereColor = fixed4(0.0, 0.0, 1.0, sphereColor.a); // Bright Blue, preserve alpha
+                }
+                // Convert RED (1,0,0) → Dark Blue (0,0,0.5) for individual spheres
+                else if (sphereColor.r > 0.9 && sphereColor.g < 0.1 && sphereColor.b < 0.1)
+                {
+                    sphereColor = fixed4(0.0, 0.0, 0.5, sphereColor.a); // Dark Blue, preserve alpha
+                }
                 
                 // Alpha blend sphere over background
                 float3 finalColor = lerp(bgColor.rgb, sphereColor.rgb, sphereColor.a);
