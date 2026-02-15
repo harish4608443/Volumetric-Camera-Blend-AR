@@ -713,10 +713,10 @@ public class DetectionSphereManager : MonoBehaviour
                 if (wireframeShader != null)
                 {
                     mat = new Material(wireframeShader);
-                    mat.SetColor("_WireColor", new Color(0.0f, 1.0f, 1.0f, 1.0f)); // Bright cyan for wireframe
+                    mat.SetColor("_WireColor", new Color(0.0f, 0.4f, 0.8f, 1.0f)); // IntelliCap blue for wireframe
                     mat.SetFloat("_WireThickness", 1.2f);
                     mat.SetFloat("_WireAlpha", 0.8f);
-                    Debug.Log($"[SPHERE PREFAB] Wireframe shader loaded (cyan)");
+                    Debug.Log($"[SPHERE PREFAB] Wireframe shader loaded (IntelliCap blue)");
                 }
                 else
                 {
@@ -727,13 +727,13 @@ public class DetectionSphereManager : MonoBehaviour
                     if (fallback != null)
                     {
                         mat = new Material(fallback);
-                        mat.color = new Color(0.0f, 1.0f, 1.0f, 0.6f); // Bright cyan with 60% alpha
+                        mat.color = new Color(0.0f, 0.4f, 0.8f, 0.6f); // IntelliCap blue with 60% alpha
                     }
                     else
                     {
                         Debug.LogError("[SPHERE PREFAB] Even Sprites/Default not found! Creating default material");
                         mat = new Material(Shader.Find("Standard"));
-                        mat.color = new Color(0.0f, 1.0f, 1.0f, 0.7f); // Bright cyan with 70% alpha
+                        mat.color = new Color(0.0f, 0.4f, 0.8f, 0.7f); // IntelliCap blue with 70% alpha
                     }
                 }
                 
@@ -829,10 +829,10 @@ public class DetectionSphereManager : MonoBehaviour
                 if (wireframeShader != null)
                 {
                     mat = new Material(wireframeShader);
-                    mat.SetColor("_WireColor", new Color(0.0f, 1.0f, 1.0f, 1.0f)); // Bright cyan for wireframe
+                    mat.SetColor("_WireColor", new Color(0.0f, 0.4f, 0.8f, 1.0f)); // IntelliCap blue for wireframe
                     mat.SetFloat("_WireThickness", 1.2f);
                     mat.SetFloat("_WireAlpha", 0.8f);
-                    Debug.Log($"[SPHERE ICOSPHERE] Wireframe shader loaded (cyan)");
+                    Debug.Log($"[SPHERE ICOSPHERE] Wireframe shader loaded (IntelliCap blue)");
                 }
                 else
                 {
@@ -843,13 +843,13 @@ public class DetectionSphereManager : MonoBehaviour
                     if (fallback != null)
                     {
                         mat = new Material(fallback);
-                        mat.color = new Color(0.0f, 1.0f, 1.0f, 0.6f); // Bright cyan with 60% alpha
+                        mat.color = new Color(0.0f, 0.4f, 0.8f, 0.6f); // IntelliCap blue with 60% alpha
                     }
                     else
                     {
                         Debug.LogError("[SPHERE ICOSPHERE] Even Sprites/Default not found! Creating default material");
                         mat = new Material(Shader.Find("Standard"));
-                        mat.color = new Color(0.0f, 1.0f, 1.0f, 0.7f); // Bright cyan with 70% alpha
+                        mat.color = new Color(0.0f, 0.4f, 0.8f, 0.7f); // IntelliCap blue with 70% alpha
                     }
                 }
                 

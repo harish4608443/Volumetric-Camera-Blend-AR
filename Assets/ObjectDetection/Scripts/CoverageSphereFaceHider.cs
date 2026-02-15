@@ -86,10 +86,10 @@ public class CoverageSphereFaceHider : MonoBehaviour
         _verts = _mesh.vertices;
         _tris  = _mesh.triangles;
 
-        // Init colors (start visible with bright cyan)
+        // Init colors (start visible with IntelliCap blue)
         _colors = new Color[_verts.Length];
         for (int i = 0; i < _colors.Length; i++)
-            _colors[i] = new Color(0.0f, 1.0f, 1.0f, 0.6f); // Bright cyan 60% alpha
+            _colors[i] = new Color(0.0f, 0.4f, 0.8f, 0.6f); // IntelliCap blue 60% alpha
 
         _mesh.colors = _colors;
 

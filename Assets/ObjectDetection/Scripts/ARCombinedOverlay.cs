@@ -669,27 +669,84 @@ public class ARCombinedOverlay : MonoBehaviour
                 // Strict filtering: only create spheres for detections that just appeared (age < 0.5s)
                 if (enableSpheres && sphereManager != null && validDetections.Count > 0)
                 {
-                    // Filter to only FRESH detections (prevent sphere spam from old/fading detections)
-                    List<ResultBox> freshDetections = new List<ResultBox>();
+                    // Step 1: Collect fresh detections with their IntelliCap scores
+                    List<(ResultBox box, float score, string className)> candidates = new List<(ResultBox, float, string)>();
+                    
                     foreach (var timedBox in updatedDetections)
                     {
                         float age = currentTime - timedBox.timestamp;
                         // Only create spheres for recent detections with high confidence
-                        // Increased to 60% to reduce false positives and random sphere creation
                         if (age < 0.5f && timedBox.box.score >= 0.6f) // 60% confidence minimum
                         {
-                            freshDetections.Add(timedBox.box);
+                            string className = GetClassName(timedBox.box.bestClassIndex);
+                            float intelliCapScore = ObjectDetectionThresholds.GetObjectScore(className, timedBox.box.score);
+                            
+                            if (intelliCapScore >= 0f) // Passed threshold check
+                            {
+                                candidates.Add((timedBox.box, intelliCapScore, className));
+                            }
+                            else
+                            {
+                                Debug.Log($"[FILTER] {className} rejected by IntelliCap thresholds (conf:{timedBox.box.score:F2})");
+                            }
                         }
                     }
                     
-                    if (freshDetections.Count > 0)
+                    // Step 2: Competitive filtering - keep only highest-scoring object in overlapping groups
+                    List<ResultBox> competitiveWinners = new List<ResultBox>();
+                    
+                    if (candidates.Count > 0)
                     {
-                        Debug.Log($"🎯 Creating spheres for {freshDetections.Count} fresh detections (age<0.5s, conf>=60%)");
-                        sphereManager.CreateSpheresForDetections(freshDetections, src.width, src.height, cropScaleRatio, cropOffsetX, cropOffsetY);
+                        // Sort by score (highest first)
+                        candidates.Sort((a, b) => b.score.CompareTo(a.score));
+                        
+                        Debug.Log($"[COMPETITIVE] {candidates.Count} candidates, sorted by score:");
+                        foreach (var c in candidates)
+                        {
+                            Debug.Log($"  - {c.className}: score={c.score:F2}, conf={c.box.score:F2}");
+                        }
+                        
+                        // Greedy selection: process highest-scoring first
+                        foreach (var candidate in candidates)
+                        {
+                            // Check if this candidate overlaps with any already-selected winner
+                            bool overlapsWinner = false;
+                            
+                            foreach (var winner in competitiveWinners)
+                            {
+                                // Calculate IoU (Intersection over Union)
+                                float intersectionArea = GetIntersectionArea(candidate.box.rect, winner.rect);
+                                float box1Area = candidate.box.rect.width * candidate.box.rect.height;
+                                float box2Area = winner.rect.width * winner.rect.height;
+                                float unionArea = box1Area + box2Area - intersectionArea;
+                                float iou = unionArea > 0 ? intersectionArea / unionArea : 0f;
+                                
+                                // If IoU > 30%, consider them overlapping (competing)
+                                if (iou > 0.3f)
+                                {
+                                    string winnerClass = GetClassName(winner.bestClassIndex);
+                                    Debug.Log($"[COMPETITIVE] ❌ {candidate.className} (score:{candidate.score:F2}) LOSES to {winnerClass} (IoU:{iou:F2})");
+                                    overlapsWinner = true;
+                                    break;
+                                }
+                            }
+                            
+                            if (!overlapsWinner)
+                            {
+                                competitiveWinners.Add(candidate.box);
+                                Debug.Log($"[COMPETITIVE] ✅ {candidate.className} WINS (score:{candidate.score:F2})");
+                            }
+                        }
+                    }
+                    
+                    if (competitiveWinners.Count > 0)
+                    {
+                        Debug.Log($"🎯 Creating spheres for {competitiveWinners.Count} winners after competitive filtering ({candidates.Count} candidates)");
+                        sphereManager.CreateSpheresForDetections(competitiveWinners, src.width, src.height, cropScaleRatio, cropOffsetX, cropOffsetY);
                     }
                     else
                     {
-                        Debug.Log($"⏭️ No fresh detections for sphere creation ({validDetections.Count} valid but not fresh enough)");
+                        Debug.Log($"⏭️ No detections passed competitive filtering ({validDetections.Count} valid, {candidates.Count} candidates)");
                     }
                 }
                 else if (!enableSpheres)
