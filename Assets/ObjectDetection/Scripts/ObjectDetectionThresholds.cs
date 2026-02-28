@@ -27,68 +27,57 @@ public class ObjectDetectionThresholds
         }
     }
 
-    // Minimum threshold values - objects must meet at least one to pass
+    // SELECTIVE whitelist - focus on good AR targets (balanced: not too strict, not too loose)
     private static readonly Dictionary<string, ObjectThreshold> thresholds = new Dictionary<string, ObjectThreshold>()
     {
-        // Kitchen & Dining Objects (high detection priority)
-        { "bottle",      new ObjectThreshold(0.7f, 0.6f, 0.8f, 0.7f, 0.5f) },  // High geometric (cylindrical), medium specular, some transparency
-        { "wine glass",  new ObjectThreshold(0.8f, 0.4f, 0.7f, 0.8f, 0.8f) },  // Very high transparent, high geometric (stem)
-        { "cup",         new ObjectThreshold(0.7f, 0.6f, 0.75f, 0.6f, 0.3f) }, // High geometric (cylindrical), medium texture
-        { "bowl",        new ObjectThreshold(0.75f, 0.5f, 0.7f, 0.5f, 0.2f) }, // High geometric (circular), medium size
-        { "fork",        new ObjectThreshold(0.9f, 0.3f, 0.6f, 0.7f, 0.0f) },  // Very high geometric (distinct prongs), high specular
-        { "knife",       new ObjectThreshold(0.85f, 0.3f, 0.65f, 0.8f, 0.0f) }, // High geometric (blade), very high specular
-        { "spoon",       new ObjectThreshold(0.8f, 0.3f, 0.6f, 0.75f, 0.0f) }, // High geometric, high specular
+        // TOP PRIORITY: Small handheld objects (most common AR targets)
+        { "bottle",      new ObjectThreshold(0.8f, 0.7f, 0.85f, 0.75f, 0.6f) },  // Primary target
+        { "wine glass",  new ObjectThreshold(0.85f, 0.5f, 0.8f, 0.85f, 0.85f) }, // Very distinctive
+        { "cup",         new ObjectThreshold(0.8f, 0.7f, 0.8f, 0.7f, 0.4f) },     // Common household
+        { "bowl",        new ObjectThreshold(0.75f, 0.6f, 0.75f, 0.6f, 0.3f) },   // Added back - common
         
-        // Note: "mug" is not a COCO class - YOLO detects it as "cup". Left here for reference.
-        // If using custom YOLO with mug class, use these scores (lower than bottle):
-        // { "mug",      new ObjectThreshold(0.6f, 0.5f, 0.65f, 0.5f, 0.0f) }, // Medium scores - loses to bottle
+        // HIGH PRIORITY: Electronics (clear shapes, high-value targets)
+        { "cell phone",  new ObjectThreshold(0.85f, 0.8f, 0.85f, 0.7f, 0.0f) },  // Very distinctive
+        { "laptop",      new ObjectThreshold(0.85f, 0.8f, 0.9f, 0.7f, 0.0f) },   // Large, clear
+        { "mouse",       new ObjectThreshold(0.75f, 0.65f, 0.75f, 0.6f, 0.0f) },  // Added back - common
+        { "keyboard",    new ObjectThreshold(0.85f, 0.8f, 0.85f, 0.5f, 0.0f) },  // Added back - distinctive keys
+        { "remote",      new ObjectThreshold(0.85f, 0.75f, 0.8f, 0.5f, 0.0f) },  // Buttons pattern
         
-        // Electronics (medium-high priority)
-        { "cell phone",  new ObjectThreshold(0.8f, 0.7f, 0.8f, 0.6f, 0.0f) },  // High geometric (rectangular), high texture (screen)
-        { "laptop",      new ObjectThreshold(0.8f, 0.75f, 0.85f, 0.6f, 0.0f) }, // High geometric, high texture
-        { "mouse",       new ObjectThreshold(0.75f, 0.6f, 0.7f, 0.5f, 0.0f) }, // Medium-high geometric
-        { "keyboard",    new ObjectThreshold(0.85f, 0.8f, 0.8f, 0.4f, 0.0f) }, // High geometric (keys pattern), high texture
-        { "remote",      new ObjectThreshold(0.8f, 0.7f, 0.75f, 0.4f, 0.0f) }, // High geometric, high texture (buttons)
+        // MEDIUM PRIORITY: Utensils (very distinctive shapes)
+        { "fork",        new ObjectThreshold(0.95f, 0.4f, 0.7f, 0.8f, 0.0f) },   // Unique prongs
+        { "knife",       new ObjectThreshold(0.9f, 0.4f, 0.75f, 0.85f, 0.0f) },  // Blade
+        { "spoon",       new ObjectThreshold(0.85f, 0.4f, 0.7f, 0.8f, 0.0f) },   // Clear shape
         
-        // Furniture & Large Objects (medium priority - may not want spheres for these)
-        { "chair",       new ObjectThreshold(0.5f, 0.4f, 0.6f, 0.2f, 0.0f) },  // Lower priority - too large
-        { "couch",       new ObjectThreshold(0.4f, 0.5f, 0.5f, 0.2f, 0.0f) },  // Lower priority - too large
-        { "dining table", new ObjectThreshold(0.5f, 0.4f, 0.6f, 0.3f, 0.0f) }, // Lower priority - too large
-        { "bed",         new ObjectThreshold(0.4f, 0.5f, 0.5f, 0.2f, 0.0f) },  // Lower priority - too large
+        // MEDIUM PRIORITY: Personal items
+        { "backpack",    new ObjectThreshold(0.75f, 0.75f, 0.8f, 0.4f, 0.0f) },  // Added back - texture
+        { "handbag",     new ObjectThreshold(0.75f, 0.8f, 0.75f, 0.5f, 0.0f) },  // Added back - texture
         
-        // Personal Items (high priority)
-        { "backpack",    new ObjectThreshold(0.7f, 0.7f, 0.75f, 0.3f, 0.0f) }, // High texture variety
-        { "handbag",     new ObjectThreshold(0.7f, 0.75f, 0.7f, 0.4f, 0.0f) }, // High texture, medium geometric
-        { "tie",         new ObjectThreshold(0.8f, 0.7f, 0.6f, 0.5f, 0.0f) },  // High geometric (elongated), high texture
-        { "suitcase",    new ObjectThreshold(0.75f, 0.6f, 0.8f, 0.4f, 0.0f) }, // High geometric, good size
+        // MEDIUM PRIORITY: Other clear objects
+        { "vase",        new ObjectThreshold(0.9f, 0.6f, 0.8f, 0.7f, 0.4f) },    // Unique shapes
+        { "book",        new ObjectThreshold(0.85f, 0.75f, 0.8f, 0.4f, 0.0f) },  // Rectangular
+        { "clock",       new ObjectThreshold(0.85f, 0.75f, 0.75f, 0.6f, 0.0f) }, // Added back - face pattern
         
-        // Sports & Recreation (medium priority)
-        { "sports ball", new ObjectThreshold(0.9f, 0.6f, 0.75f, 0.4f, 0.0f) }, // Very high geometric (spherical)
-        { "frisbee",     new ObjectThreshold(0.85f, 0.5f, 0.7f, 0.4f, 0.0f) },  // High geometric (circular disc)
-        { "skateboard",  new ObjectThreshold(0.8f, 0.6f, 0.75f, 0.3f, 0.0f) },  // High geometric, medium texture
+        // MEDIUM PRIORITY: Sports (distinctive shapes)
+        { "sports ball", new ObjectThreshold(0.95f, 0.65f, 0.8f, 0.5f, 0.0f) },  // Added back - spherical
+        { "frisbee",     new ObjectThreshold(0.9f, 0.6f, 0.75f, 0.5f, 0.0f) },   // Added back - disc
         
-        // Books & Paper (medium priority)
-        { "book",        new ObjectThreshold(0.8f, 0.7f, 0.7f, 0.3f, 0.0f) },  // High geometric (rectangular), high texture
-        
-        // Home Items (medium priority)
-        { "vase",        new ObjectThreshold(0.85f, 0.5f, 0.75f, 0.6f, 0.3f) }, // High geometric (unique shapes), some transparency
-        { "clock",       new ObjectThreshold(0.8f, 0.7f, 0.7f, 0.5f, 0.0f) },  // High geometric (circular/rectangular), high texture (face)
-        { "potted plant", new ObjectThreshold(0.6f, 0.8f, 0.7f, 0.2f, 0.0f) }, // High texture variety (leaves)
-        
-        // Appliances (medium-high priority)
-        { "microwave",   new ObjectThreshold(0.75f, 0.5f, 0.8f, 0.5f, 0.0f) }, // High geometric, good size
-        { "oven",        new ObjectThreshold(0.7f, 0.5f, 0.8f, 0.5f, 0.0f) },  // Good geometric and size
-        { "toaster",     new ObjectThreshold(0.8f, 0.5f, 0.75f, 0.6f, 0.0f) }, // High geometric, medium specular
+        // NOTE: Still excluded furniture (too large), large appliances (not handheld)
     };
 
-    // Minimum scores required to pass (objects must exceed at least ONE of these)
+    // BALANCED strict minimum scores - require quality but not perfection
     private static readonly ObjectThreshold minimumThresholds = new ObjectThreshold(
-        geometric: 0.6f,    // 60% geometric complexity
-        texture: 0.6f,      // 60% texture variance
-        size: 0.65f,        // 65% size match
-        specular: 0.6f,     // 60% specularity
-        transparent: 0.4f   // 40% transparency (lower because fewer objects are transparent)
+        geometric: 0.75f,   // 75% geometric complexity (balanced from 80%)
+        texture: 0.7f,      // 70% texture variance (balanced from 75%)
+        size: 0.7f,         // 70% size match (balanced from 75%)
+        specular: 0.7f,     // 70% specularity (balanced from 75%)
+        transparent: 0.5f   // 50% transparency (balanced from 60%)
     );
+    
+    // BALANCED: Require 2 out of 5 criteria (reduced from 3 - was too strict)
+    private const int MIN_CRITERIA_REQUIRED = 2;
+    
+    // BALANCED: Minimum total score 2.5 (reduced from 3.0) - good quality objects
+    private const float MIN_TOTAL_SCORE = 2.5f;
 
     /// <summary>
     /// Calculate total IntelliCap score for an object (higher = better for detection).
@@ -99,37 +88,53 @@ public class ObjectDetectionThresholds
     /// <returns>Total score (0-5), or -1 if below minimum thresholds</returns>
     public static float GetObjectScore(string className, float confidence)
     {
-        // If object class not in threshold dictionary, use confidence-only
+        // STRICT: Reject ALL unknown objects (not in whitelist)
         if (!thresholds.ContainsKey(className))
         {
-            Debug.Log($"[THRESHOLD] {className} not in config, score = confidence ({confidence:F2})");
-            return confidence >= 0.6f ? confidence : -1f; // Return confidence as score if passes
+            Debug.Log($"[THRESHOLD] ❌ {className} REJECTED - not in whitelist (unknown object)");
+            return -1f; // Unknown objects automatically fail
         }
 
         ObjectThreshold objThreshold = thresholds[className];
 
-        // Check if ANY threshold criterion is met (IntelliCap OR logic)
+        // STRICT: Count how many criteria pass (requires MULTIPLE, not just one)
         bool geometric = objThreshold.Geometric >= minimumThresholds.Geometric;
         bool texture = objThreshold.Texture >= minimumThresholds.Texture;
         bool size = objThreshold.Size >= minimumThresholds.Size;
         bool specular = objThreshold.Specular >= minimumThresholds.Specular;
         bool transparent = objThreshold.Transparent >= minimumThresholds.Transparent;
 
-        bool passes = geometric || texture || size || specular || transparent;
+        int passedCriteria = (geometric ? 1 : 0) + (texture ? 1 : 0) + (size ? 1 : 0) + 
+                             (specular ? 1 : 0) + (transparent ? 1 : 0);
 
-        if (!passes)
+        if (passedCriteria < MIN_CRITERIA_REQUIRED)
         {
-            Debug.Log($"[THRESHOLD] ❌ {className} REJECTED - all scores below minimum");
-            return -1f; // Failed threshold check
+            Debug.Log($"[THRESHOLD] ❌ {className} REJECTED - only {passedCriteria}/{MIN_CRITERIA_REQUIRED} criteria passed " +
+                      $"(geo:{objThreshold.Geometric:F2}{(geometric ? "✓" : "✗")}, " +
+                      $"tex:{objThreshold.Texture:F2}{(texture ? "✓" : "✗")}, " +
+                      $"size:{objThreshold.Size:F2}{(size ? "✓" : "✗")}, " +
+                      $"spec:{objThreshold.Specular:F2}{(specular ? "✓" : "✗")}, " +
+                      $"trans:{objThreshold.Transparent:F2}{(transparent ? "✓" : "✗")})");
+            return -1f; // Requires at least 2 criteria
         }
 
         // Calculate total score (sum of all properties, weighted by confidence)
         float totalScore = (objThreshold.Geometric + objThreshold.Texture + objThreshold.Size + 
                            objThreshold.Specular + objThreshold.Transparent) * confidence;
 
-        Debug.Log($"[THRESHOLD] {className} score={totalScore:F2} (geo:{objThreshold.Geometric:F2}, " +
-                  $"tex:{objThreshold.Texture:F2}, size:{objThreshold.Size:F2}, " +
-                  $"spec:{objThreshold.Specular:F2}, trans:{objThreshold.Transparent:F2}) × conf:{confidence:F2}");
+        // STRICT: Require minimum total score
+        if (totalScore < MIN_TOTAL_SCORE)
+        {
+            Debug.Log($"[THRESHOLD] ❌ {className} REJECTED - total score {totalScore:F2} < minimum {MIN_TOTAL_SCORE:F2}");
+            return -1f;
+        }
+
+        Debug.Log($"[THRESHOLD] ✅ {className} PASSED: score={totalScore:F2} ({passedCriteria}/5 criteria) " +
+                  $"(geo:{objThreshold.Geometric:F2}{(geometric ? "✓" : "✗")}, " +
+                  $"tex:{objThreshold.Texture:F2}{(texture ? "✓" : "✗")}, " +
+                  $"size:{objThreshold.Size:F2}{(size ? "✓" : "✗")}, " +
+                  $"spec:{objThreshold.Specular:F2}{(specular ? "✓" : "✗")}, " +
+                  $"trans:{objThreshold.Transparent:F2}{(transparent ? "✓" : "✗")}) × conf:{confidence:F2}");
 
         return totalScore;
     }

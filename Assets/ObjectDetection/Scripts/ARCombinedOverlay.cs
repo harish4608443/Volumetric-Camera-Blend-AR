@@ -18,20 +18,37 @@ public class ARCombinedOverlay : MonoBehaviour
     public bool enableStripes = true;  // Show pink-white stripes on unscanned areas
     public bool showCameraUntilScanned = false;  // Show stripes immediately, not camera feed
     public bool enablePointCloudRendering = false;  // Disable red dots
-    [Tooltip("Force full screen stripes at startup - disable this to show camera feed with depth-based stripes")]
-    public bool forceFullOverlay = false;  // FALSE = depth-based scanning mode
-    [Tooltip("Depth threshold in meters - show STRIPES on objects FARTHER than this (far/uncertain), show CAMERA on objects closer. Default 2.0m.")]
-    public float incompleteThreshold = 2.0f;
+    
+    [Header("Spatial Coverage Method")]
+    [Tooltip("Use TSDF weight volume for spatial coverage (IntelliCap method) instead of simple depth threshold")]
+    public bool useTSDFWeights = false;  // DISABLED: TSDFVolumeAtlas.SampleWeightViaCPU() not implemented yet (returns 0)
+    
+    [Header("Depth Threshold Method (Simple)")]
+    [Tooltip("Depth threshold in meters - areas closer than this show camera feed")]
+    [Range(0.3f, 3.0f)]
+    public float depthThreshold = 2.0f;  // 2.0 meters - comfortable distance to see camera feed
+    [Tooltip("Use accumulative scanning - once scanned, area stays scanned")]
+    public bool useAccumulativeScanning = false;  // REAL-TIME mode: stripes show immediately on unscanned areas
+    
+    [Header("TSDF Weight Method (IntelliCap)")]
+    [Tooltip("Minimum TSDF weight to consider area scanned (NOT USED - weight sampling unimplemented)")]
+    [Range(0.01f, 10.0f)]
+    public float minTSDFWeight = 1.0f;  // Areas with weight >= 1.0 would show camera feed (if implemented)
+    [Tooltip("TSDFVolumeAtlas component for weight-based spatial coverage")]
+    public MonoBehaviour tsdfAtlas;  // Auto-found if not assigned (uses MonoBehaviour to avoid assembly reference issues)
+    
     private int textureWidth = 128;
     private int textureHeight = 128;
-    private int maskUpdateInterval = 3;  // Update every 3 frames for better performance
+    private float depthModeEnabledTime = -1f;  // Track when depth mode becomes enabled
+    private Color32[] accumulativeMask;  // Persistent spatial coverage memory
+    private int tsdfAtlasRetryCount = 0;  // Retry finding TSDF atlas in first few frames
     
     [Header("YOLO Detection Settings")]
     public bool enableObjectDetection = true;
     [Tooltip("YOLOv8 ONNX model file")]
     public NNModel yoloModel;
     [Range(0.0f, 1f)]
-    public float minConfidence = 0.15f;  // Working threshold - 15%
+    public float minConfidence = 0.40f;  // 40% confidence - filters out most false positives
     public int detectionInterval = 7;  // Every 7th frame - WORKING SETTING
     public float minBoxSize = 15f;
      
@@ -181,47 +198,80 @@ public class ARCombinedOverlay : MonoBehaviour
         // Initialize stripe overlay
         if (enableStripes)
         {
-            // Ensure ARCameraManager exists (CRITICAL for depth API to work)
-            ARCameraManager cameraManager = FindObjectOfType<ARCameraManager>();
-            if (cameraManager == null)
+            // Auto-find TSDF atlas if using TSDF weight method
+            if (useTSDFWeights && tsdfAtlas == null)
             {
-                cameraManager = gameObject.AddComponent<ARCameraManager>();
-                Debug.Log("[DEPTH INIT] Added ARCameraManager to AR Camera");
-            }
-            else
-            {
-                Debug.Log("[DEPTH INIT] ARCameraManager already present");
+                // Search all MonoBehaviours for one with class name "TSDFVolumeAtlas"
+                // Type.GetType() doesn't work across assemblies without full assembly qualification
+                MonoBehaviour[] allMonoBehaviours = GameObject.FindObjectsOfType<MonoBehaviour>();
+                foreach (MonoBehaviour mb in allMonoBehaviours)
+                {
+                    if (mb.GetType().Name == "TSDFVolumeAtlas")
+                    {
+                        tsdfAtlas = mb;
+                        break;
+                    }
+                }
+                
+                if (tsdfAtlas != null)
+                {
+                    Debug.Log($"[STRIPE] ✅ Auto-found TSDFVolumeAtlas for spatial coverage");
+                    Debug.LogWarning($"[STRIPE] ⚠️ TSDF weight sampling not implemented yet (SampleWeightViaCPU returns 0), staying with depth threshold");
+                    useTSDFWeights = false;  // Force fallback to depth threshold
+                }
+                else
+                {
+                    Debug.LogWarning($"[STRIPE] ⚠️ TSDFVolumeAtlas not found yet (may be execution order issue, will retry)");
+                    // Don't set useTSDFWeights=false yet - retry in Update() for first few frames
+                }
             }
             
             occlusionManager = FindObjectOfType<AROcclusionManager>();
             if (occlusionManager != null)
             {
                 occlusionManager.enabled = true;
-                // Explicitly request depth data for sphere placement
                 occlusionManager.requestedEnvironmentDepthMode = UnityEngine.XR.ARSubsystems.EnvironmentDepthMode.Fastest;
-                Debug.Log($"[DEPTH INIT] Set depth mode to Fastest, current mode: {occlusionManager.currentEnvironmentDepthMode}");
+                Debug.Log($"[STRIPE] Occlusion manager found, depth mode: {occlusionManager.currentEnvironmentDepthMode}");
             }
             else
             {
-                Debug.LogWarning("[DEPTH INIT] AROcclusionManager not found in scene!");
+                Debug.LogWarning("[STRIPE] AROcclusionManager not found - depth-based masking unavailable");
             }
             
             stripeTexture = GenerateStripeTexture(256, 256, 4);
-            Debug.Log($"[STRIPE] Generated stripe texture: {stripeTexture != null}, size: {(stripeTexture != null ? stripeTexture.width + "x" + stripeTexture.height : "null")}");
+            Debug.Log($"[STRIPE] Generated stripe texture");
             
             Shader blitShader = Shader.Find("ARRealism/PointCloudComposite");
-            Debug.Log($"[STRIPE] Shader.Find('ARRealism/PointCloudComposite') result: {blitShader != null}");
             if (blitShader == null)
             {
-                Debug.LogError("[STRIPE] ❌ PointCloudComposite shader not found! Check GraphicsSettings!");
-                Debug.LogError("[STRIPE] ❌ Stripes DISABLED - shader missing from build");
+                Debug.LogError("[STRIPE] PointCloudComposite shader not found!");
                 enableStripes = false;
             }
             else
             {
                 blitMaterial = new Material(blitShader);
-                Debug.Log($"[STRIPE] ✅ Stripe overlay initialized! Material: {blitMaterial != null}, Shader: {blitShader.name}");
-                Debug.Log($"[STRIPE] ✅ Mode: {(forceFullOverlay ? "FULL OVERLAY (stripes everywhere)" : "DEPTH-BASED (stripes on unscanned areas)")}");
+                
+                // ALWAYS force real-time mode (accumulative causes stripes to disappear)
+                if (useAccumulativeScanning)
+                {
+                    Debug.LogWarning($"[STRIPE] Accumulative mode causes stripes to disappear, forcing REAL-TIME mode");
+                    useAccumulativeScanning = false;
+                }
+                
+                // Log active spatial coverage method
+                string method = useTSDFWeights ? "TSDF WEIGHTS (IntelliCap)" : "DEPTH THRESHOLD (Simple)";
+                Debug.Log($"[STRIPE] 📊 SPATIAL COVERAGE METHOD: {method}");
+                
+                if (useTSDFWeights)
+                {
+                    Debug.Log($"[STRIPE] TSDF Settings: minWeight={minTSDFWeight}, atlas={tsdfAtlas != null}");
+                }
+                else
+                {
+                    Debug.Log($"[STRIPE] Depth Settings: Threshold={depthThreshold}m, Accumulative={useAccumulativeScanning}");
+                }
+                
+                Debug.Log($"[STRIPE] ✅ FINAL SETTINGS: Method={method}");
             }
         }
         
@@ -251,8 +301,12 @@ public class ARCombinedOverlay : MonoBehaviour
                 return;
             }
             
-            // Force confidence threshold
-            minConfidence = 0.15f;  // WORKING VALUE - don't change
+            // Ensure minimum confidence threshold (don't override Inspector value unless too low)
+            if (minConfidence < 0.25f)
+            {
+                Debug.LogWarning($"[YOLO] Confidence threshold {minConfidence} too low, forcing to 0.35f");
+                minConfidence = 0.35f;
+            }
             
             Debug.Log($"Loading YOLO model: {yoloModel.name}");
             
@@ -271,8 +325,9 @@ public class ARCombinedOverlay : MonoBehaviour
                 
                 Debug.Log($"✅✅✅ YOLO INITIALIZED SUCCESSFULLY! ✅✅✅");
                 Debug.Log($"  Model: {yoloModel.name}");
-                Debug.Log($"  Min Confidence: {minConfidence}");
+                Debug.Log($"  Min Confidence: {minConfidence:P0} ({minConfidence})");
                 Debug.Log($"  Detection Interval: {detectionInterval} frames");
+                Debug.Log($"  Objects below {minConfidence:P0} confidence will be ignored");
             }
             catch (System.Exception e)
             {
@@ -325,6 +380,40 @@ public class ARCombinedOverlay : MonoBehaviour
     
     void Update()
     {
+        // Retry finding TSDF atlas if it wasn't found in Start() (execution order issue)
+        // TSDFVolumeAtlas initializes around frame 15-20, so retry for 60 frames to be safe
+        if (useTSDFWeights && tsdfAtlas == null && tsdfAtlasRetryCount < 60)
+        {
+            tsdfAtlasRetryCount++;
+            
+            // Log retry attempts periodically
+            if (tsdfAtlasRetryCount % 10 == 0 || tsdfAtlasRetryCount <= 3)
+            {
+                Debug.Log($"[STRIPE] Retrying TSDFVolumeAtlas search... attempt #{tsdfAtlasRetryCount}, frame {Time.frameCount}");
+            }
+            
+            // Search all MonoBehaviours for one with class name "TSDFVolumeAtlas"
+            // Type.GetType() doesn't work across assemblies, so we search manually
+            MonoBehaviour[] allMonoBehaviours = GameObject.FindObjectsOfType<MonoBehaviour>();
+            foreach (MonoBehaviour mb in allMonoBehaviours)
+            {
+                if (mb.GetType().Name == "TSDFVolumeAtlas")
+                {
+                    tsdfAtlas = mb;
+                    Debug.Log($"[STRIPE] ✅ Found TSDFVolumeAtlas on frame {Time.frameCount} (retry #{tsdfAtlasRetryCount})");
+                    Debug.Log($"[STRIPE] 📊 SWITCHING TO TSDF WEIGHTS MODE (IntelliCap)");
+                    break;
+                }
+            }
+            
+            // After 60 retries (~3 seconds), give up and fall back to depth threshold
+            if (tsdfAtlasRetryCount >= 60 && tsdfAtlas == null)
+            {
+                Debug.LogWarning($"[STRIPE] ⚠️ TSDFVolumeAtlas not found after 60 frames! Falling back to depth threshold method");
+                useTSDFWeights = false;
+            }
+        }
+        
         // Continuously ensure camera stays enabled
         Camera cam = GetComponent<Camera>();
         if (cam != null && !cam.enabled)
@@ -418,61 +507,57 @@ public class ARCombinedOverlay : MonoBehaviour
     
     void ApplyStripeOverlay(RenderTexture src, RenderTexture dest)
     {
-        // Log first few frames for debugging
-        if (Time.frameCount <= 5)
-        {
-            Debug.Log($"[STRIPE] ApplyStripeOverlay CALLED! forceFullOverlay={forceFullOverlay}, material={blitMaterial != null}, texture={stripeTexture != null}");
-        }
-        
-        VLog($"[STRIPE] ApplyStripeOverlay - forceFullOverlay: {forceFullOverlay}, material: {blitMaterial != null}, texture: {stripeTexture != null}");
-        
         // SAFETY: If shader failed to load, just show camera feed
         if (blitMaterial == null || stripeTexture == null)
         {
-            Debug.LogWarning($"[STRIPE] Shader not ready - passing through camera. Material: {blitMaterial != null}, Texture: {stripeTexture != null}");
             Graphics.Blit(src, dest);
             return;
         }
         
-        // FULL OVERLAY MODE: Show pink-white stripes everywhere (app startup)
-        if (forceFullOverlay)
-        {
-            if (Time.frameCount % 60 == 0) // Log every second
-            {
-                Debug.Log($"[STRIPE] FULL OVERLAY MODE ACTIVE - forceFullOverlay=true, showing stripes everywhere");
-            }
-            VLog("[STRIPE] Applying FULL stripe overlay with material");
-            blitMaterial.SetTexture("_CameraTex", src);
-            blitMaterial.SetTexture("_MaskTex", Texture2D.blackTexture);  // BLACK (mask=0) = stripes everywhere in old shader
-            blitMaterial.SetTexture("_StripeTex", stripeTexture);
-            Graphics.Blit(src, dest, blitMaterial);
-            return;
-        }
+        // Generate mask VERY frequently to show stripes in real-time
+        // Every 3 frames for first 60 seconds, then every 10 frames
+        int currentUpdateInterval = (Time.time < 60f) ? 3 : 10;
         
-        // NORMAL MODE: Update mask every N frames and show camera feed with depth-based stripes
+        // Generate mask every N frames OR if maskTexture is null (keep trying until depth available)
         stripeFrameCounter++;
-        if (stripeFrameCounter >= maskUpdateInterval || maskTexture == null)
+        
+        if (stripeFrameCounter >= currentUpdateInterval || maskTexture == null)
         {
             stripeFrameCounter = 0;
+            
             Texture2D newMask = GenerateMaskTexture();
             if (newMask != null)
             {
-                if (Time.frameCount % 60 == 0)  // Log once per second
-                {
-                    Debug.Log($"[STRIPE] Depth-based mask updated at frame {Time.frameCount}");
-                }
                 maskTexture = newMask;
-                hasDepthData = true;  // Mark that we've received depth data
+                hasDepthData = true;
+                
+                // Track when depth first becomes available
+                if (depthModeEnabledTime < 0)
+                {
+                    depthModeEnabledTime = Time.time;
+                    Debug.Log($"[STRIPE] Depth data first acquired at {depthModeEnabledTime:F1}s (frame {Time.frameCount})");
+                }
             }
-            else if (Time.frameCount % 60 == 0)
+            else
             {
-                Debug.LogWarning($"[STRIPE] Failed to generate mask - no depth data at frame {Time.frameCount}");
+                if (Time.frameCount % 90 == 0)
+                {
+                    Debug.LogWarning($"[STRIPE] Frame {Time.frameCount}: Failed to generate mask - depth not available yet");
+                }
             }
         }
-        
+        else if (Time.frameCount % 90 == 0)
+        {
+            Debug.Log($"[STRIPE] Frame {Time.frameCount}: Using existing mask (counter={stripeFrameCounter}/{currentUpdateInterval}, time={Time.time:F1}s)");
+        }
+       
         // Show camera feed if no depth data yet and showCameraUntilScanned is enabled
         if (showCameraUntilScanned && !hasDepthData)
         {
+            if (Time.frameCount % 90 == 0)
+            {
+                Debug.Log("[STRIPE] Showing camera feed - waiting for depth data");
+            }
             Graphics.Blit(src, dest);
             return;
         }
@@ -480,19 +565,15 @@ public class ARCombinedOverlay : MonoBehaviour
         // If still no mask texture, just show camera
         if (maskTexture == null)
         {
-            if (Time.frameCount % 60 == 0)
+            if (Time.frameCount % 90 == 0)
             {
-                Debug.LogWarning($"[STRIPE] No mask texture - showing camera feed only (depth not acquired yet?)");
+                Debug.LogWarning("[STRIPE] No mask texture - showing camera feed");
             }
             Graphics.Blit(src, dest);
             return;
         }
         
-        // Apply stripes overlay on camera feed (camera visible underneath)
-        if (Time.frameCount % 60 == 0) // Log every second 
-        {
-            Debug.Log($"[STRIPE] DEPTH-BASED MODE - Applying mask-based stripes, threshold={incompleteThreshold:F2}m, hasDepth={hasDepthData}");
-        }
+        // Apply stripes overlay on camera feed
         blitMaterial.SetTexture("_CameraTex", src);
         blitMaterial.SetTexture("_MaskTex", maskTexture);
         blitMaterial.SetTexture("_StripeTex", stripeTexture);
@@ -568,9 +649,13 @@ public class ARCombinedOverlay : MonoBehaviour
             
             foreach (var box in allDetections)
             {
-                // 1. Confidence threshold (20% minimum)
+                // 1. Confidence threshold filter
                 if (box.score < minConfidence)
                 {
+                    if (Time.frameCount % 300 == 0)  // Log occasionally to show filtering is working
+                    {
+                        Debug.Log($"[YOLO] Filtered low confidence: {GetClassName(box.bestClassIndex)} {box.score:P0} < {minConfidence:P0}");
+                    }
                     continue;
                 }
                 
@@ -675,8 +760,8 @@ public class ARCombinedOverlay : MonoBehaviour
                     foreach (var timedBox in updatedDetections)
                     {
                         float age = currentTime - timedBox.timestamp;
-                        // Only create spheres for recent detections with high confidence
-                        if (age < 0.5f && timedBox.box.score >= 0.6f) // 60% confidence minimum
+                        // BALANCED: Only create spheres for recent detections with good confidence
+                        if (age < 0.5f && timedBox.box.score >= 0.70f) // BALANCED at 70% confidence (was 75%, then 65%)
                         {
                             string className = GetClassName(timedBox.box.bestClassIndex);
                             float intelliCapScore = ObjectDetectionThresholds.GetObjectScore(className, timedBox.box.score);
@@ -684,64 +769,54 @@ public class ARCombinedOverlay : MonoBehaviour
                             if (intelliCapScore >= 0f) // Passed threshold check
                             {
                                 candidates.Add((timedBox.box, intelliCapScore, className));
+                                Debug.Log($"[CANDIDATE] {className}: IntelliCap={intelliCapScore:F2}, rawConf={timedBox.box.score:P0}, age={age:F2}s");
                             }
                             else
                             {
-                                Debug.Log($"[FILTER] {className} rejected by IntelliCap thresholds (conf:{timedBox.box.score:F2})");
+                                Debug.Log($"[FILTER] {className} rejected by IntelliCap thresholds (conf:{timedBox.box.score:F2}, score:{intelliCapScore:F2})");
                             }
                         }
                     }
                     
-                    // Step 2: Competitive filtering - keep only highest-scoring object in overlapping groups
+                    // Step 2: COMPETITIVE FILTERING - Winner-Takes-All
+                    // Only the SINGLE highest-scoring object gets a sphere
                     List<ResultBox> competitiveWinners = new List<ResultBox>();
                     
                     if (candidates.Count > 0)
                     {
-                        // Sort by score (highest first)
+                        Debug.Log($"[COMPETITIVE] ===== {candidates.Count} candidates detected, applying winner-takes-all filtering =====");
+                        
+                        // Sort by IntelliCap score (highest first)
                         candidates.Sort((a, b) => b.score.CompareTo(a.score));
                         
-                        Debug.Log($"[COMPETITIVE] {candidates.Count} candidates, sorted by score:");
-                        foreach (var c in candidates)
+                        Debug.Log($"[COMPETITIVE] Candidates ranked by IntelliCap score:");
+                        for (int i = 0; i < candidates.Count; i++)
                         {
-                            Debug.Log($"  - {c.className}: score={c.score:F2}, conf={c.box.score:F2}");
+                            string rank = i == 0 ? "🏆 #1 (WINNER)" : $"#{i+1}";
+                            Debug.Log($"[COMPETITIVE]   {rank} {candidates[i].className}: IntelliCap={candidates[i].score:F2}, confidence={candidates[i].box.score:P0}");
                         }
                         
-                        // Greedy selection: process highest-scoring first
-                        foreach (var candidate in candidates)
+                        // Winner-takes-all: ONLY the top-scoring detection gets a sphere
+                        var winner = candidates[0];
+                        competitiveWinners.Add(winner.box);
+                        Debug.Log($"[COMPETITIVE] 🎯 SPHERE CREATED FOR: {winner.className} (IntelliCap score: {winner.score:F2})");
+                        
+                        // Log rejected candidates
+                        if (candidates.Count > 1)
                         {
-                            // Check if this candidate overlaps with any already-selected winner
-                            bool overlapsWinner = false;
-                            
-                            foreach (var winner in competitiveWinners)
+                            Debug.Log($"[COMPETITIVE] ❌ REJECTED {candidates.Count - 1} lower-scoring objects:");
+                            for (int i = 1; i < candidates.Count; i++)
                             {
-                                // Calculate IoU (Intersection over Union)
-                                float intersectionArea = GetIntersectionArea(candidate.box.rect, winner.rect);
-                                float box1Area = candidate.box.rect.width * candidate.box.rect.height;
-                                float box2Area = winner.rect.width * winner.rect.height;
-                                float unionArea = box1Area + box2Area - intersectionArea;
-                                float iou = unionArea > 0 ? intersectionArea / unionArea : 0f;
-                                
-                                // If IoU > 30%, consider them overlapping (competing)
-                                if (iou > 0.3f)
-                                {
-                                    string winnerClass = GetClassName(winner.bestClassIndex);
-                                    Debug.Log($"[COMPETITIVE] ❌ {candidate.className} (score:{candidate.score:F2}) LOSES to {winnerClass} (IoU:{iou:F2})");
-                                    overlapsWinner = true;
-                                    break;
-                                }
-                            }
-                            
-                            if (!overlapsWinner)
-                            {
-                                competitiveWinners.Add(candidate.box);
-                                Debug.Log($"[COMPETITIVE] ✅ {candidate.className} WINS (score:{candidate.score:F2})");
+                                Debug.Log($"[COMPETITIVE]   ❌ {candidates[i].className} (score:{candidates[i].score:F2}) - lower than winner");
                             }
                         }
+                        
+                        Debug.Log($"[COMPETITIVE] ===== Result: 1 sphere from {candidates.Count} candidates =====");
                     }
                     
                     if (competitiveWinners.Count > 0)
                     {
-                        Debug.Log($"🎯 Creating spheres for {competitiveWinners.Count} winners after competitive filtering ({candidates.Count} candidates)");
+                        Debug.Log($"🎯 Creating sphere for THE WINNER: {GetClassName(competitiveWinners[0].bestClassIndex)} (1 winner from {candidates.Count} candidates)");
                         sphereManager.CreateSpheresForDetections(competitiveWinners, src.width, src.height, cropScaleRatio, cropOffsetX, cropOffsetY);
                     }
                     else
@@ -903,15 +978,187 @@ public class ARCombinedOverlay : MonoBehaviour
         return $"Class{classIndex}";
     }
     
+    /// <summary>
+    /// Generate spatial coverage mask based on TSDF reconstruction or AR mesh (IntelliCap method).
+    /// Priority: TSDF weight volume > AR mesh > accumulative depth.
+    /// </summary>
+    
     Texture2D GenerateMaskTexture()
     {
-        if (occlusionManager == null || !occlusionManager.TryAcquireEnvironmentDepthCpuImage(out var image))
+        // ROUTE: Choose spatial coverage method
+        if (useTSDFWeights && tsdfAtlas != null)
+        {
+            // IntelliCap method: Use TSDF weight volume
+            if (Time.frameCount == 20 || Time.frameCount == 50 || Time.frameCount == 100)
+            {
+                Debug.Log($"[STRIPE MASK] F{Time.frameCount} Using TSDF WEIGHTS path (useTSDFWeights={useTSDFWeights}, atlas={tsdfAtlas != null})");
+            }
+            return GenerateMaskFromTSDFWeights();
+        }
+        
+        // Fallback/Simple method: Use raw depth threshold
+        if (Time.frameCount == 20 || Time.frameCount == 50 || Time.frameCount == 100)
+        {
+            Debug.Log($"[STRIPE MASK] F{Time.frameCount} Using DEPTH THRESHOLD path (useTSDFWeights={useTSDFWeights}, atlas={tsdfAtlas != null})");
+        }
+        
+        if (occlusionManager == null)
+        {
+            if (Time.frameCount % 90 == 0)
+            {
+                Debug.LogWarning("[STRIPE MASK] OcclusionManager is NULL");
+            }
             return null;
+        }
+        
+        // Try GPU depth texture first (more widely supported)
+        Texture depthTex = occlusionManager.environmentDepthTexture;
+        if (depthTex != null)
+        {
+            return GenerateMaskFromGPUTexture(depthTex);
+        }
+        
+        // Fall back to CPU depth image (may not be supported on all devices)
+        if (!occlusionManager.TryAcquireEnvironmentDepthCpuImage(out var image))
+        {
+            if (Time.frameCount % 90 == 0)
+            {
+                Debug.LogWarning("[STRIPE MASK] Failed to acquire depth image (CPU path), and GPU texture is null");
+                Debug.LogWarning($"[STRIPE MASK] Depth mode requested: {occlusionManager.requestedEnvironmentDepthMode}, current: {occlusionManager.currentEnvironmentDepthMode}");
+            }
+            return null;
+        }
+        
+        return GenerateMaskFromCPUImage(image);
+    }
+    
+    Texture2D GenerateMaskFromGPUTexture(Texture depthTex)
+    {
+        int targetWidth = textureWidth;
+        int targetHeight = textureHeight;
+        
+        // Initialize accumulative mask on first run
+        // SHADER LOGIC: White (255) = scanned (camera), Black (0) = unscanned (stripes)
+        if (useAccumulativeScanning && (accumulativeMask == null || accumulativeMask.Length != targetWidth * targetHeight))
+        {
+            accumulativeMask = new Color32[targetWidth * targetHeight];
+            for (int i = 0; i < accumulativeMask.Length; i++)
+            {
+                accumulativeMask[i] = new Color32(0, 0, 0, 255);  // Start ALL UNSCANNED (black = stripes)
+            }
+            Debug.Log($"[STRIPE MASK] Initialized {targetWidth}x{targetHeight} accumulative mask (GPU path) - all BLACK (unscanned/stripes)");
+        }
+        
+        // Read depth texture from GPU
+        RenderTexture rt = RenderTexture.GetTemporary(targetWidth, targetHeight, 0, RenderTextureFormat.RFloat);
+        Graphics.Blit(depthTex, rt);
+        
+        RenderTexture.active = rt;
+        Texture2D tempDepthTex = new Texture2D(targetWidth, targetHeight, TextureFormat.RFloat, false);
+        tempDepthTex.ReadPixels(new Rect(0, 0, targetWidth, targetHeight), 0, 0);
+        tempDepthTex.Apply();
+        RenderTexture.active = null;
+        RenderTexture.ReleaseTemporary(rt);
+        
+        // Process depth data
+        Color[] depthPixels = tempDepthTex.GetPixels();
+        Destroy(tempDepthTex);
+        
+        Color32[] maskPixels;
+        if (useAccumulativeScanning)
+        {
+            maskPixels = accumulativeMask;
+        }
+        else
+        {
+            maskPixels = new Color32[targetWidth * targetHeight];
+        }
+        
+        int blackCount = 0;
+        int whiteCount = 0;
+        int newlyScannedCount = 0;
+        float minDepth = float.MaxValue;
+        float maxDepth = 0f;
+        
+        for (int i = 0; i < depthPixels.Length; i++)
+        {
+            float depth = depthPixels[i].r;  // Depth stored in red channel
+            
+            if (depth > 0.01f)
+            {
+                if (depth < minDepth) minDepth = depth;
+                if (depth > maxDepth) maxDepth = depth;
+            }
+            
+            if (useAccumulativeScanning)
+            {
+                // ACCUMULATIVE: Once scanned (depth within threshold), mark as WHITE (camera), stays forever
+                if (depth > 0.01f && depth <= depthThreshold)
+                {
+                    if (maskPixels[i].r == 0)  // Was unscanned (black)
+                    {
+                        newlyScannedCount++;
+                    }
+                    maskPixels[i] = new Color32(255, 255, 255, 255);  // Scanned = WHITE (camera)
+                }
+                // DON'T reset to black - preserve spatial coverage memory
+            }
+            else
+            {
+                // REAL-TIME: Mask changes every frame based on current depth
+                // Show camera ONLY for areas within threshold, stripes everywhere else
+                if (depth > 0.01f && depth <= depthThreshold)
+                {
+                    maskPixels[i] = new Color32(255, 255, 255, 255);  // Close = WHITE (camera)
+                }
+                else
+                {
+                    maskPixels[i] = new Color32(0, 0, 0, 255);  // Far/unknown = BLACK (stripes)
+                }
+            }
+            
+            // Count pixels for statistics
+            if (maskPixels[i].r == 255)  // White = camera
+                whiteCount++;
+            else  // Black = stripes
+                blackCount++;
+        }
+        
+        // ALWAYS log mask stats to track scanning progress
+        float cameraPct = (blackCount + whiteCount > 0) ? 100f * whiteCount / (blackCount + whiteCount) : 0f;
+        string mode = useAccumulativeScanning ? "ACCUM" : "REALTIME";
+        Debug.Log($"[STRIPE MASK] F{Time.frameCount} {mode}: Cam={whiteCount}({cameraPct:F1}%) Strip={blackCount} New={newlyScannedCount} Depth:{minDepth:F2}-{maxDepth:F2}m T:{depthThreshold}m");
+        
+        if (useAccumulativeScanning)
+        {
+            accumulativeMask = maskPixels;
+        }
+        
+        Texture2D maskTex = new Texture2D(targetWidth, targetHeight, TextureFormat.R8, false);
+        maskTex.SetPixels32(maskPixels);
+        maskTex.Apply();
+        return maskTex;
+    }
+    
+    Texture2D GenerateMaskFromCPUImage(XRCpuImage image)
+    {
             
         int width = image.width;
         int height = image.height;
         int targetWidth = Mathf.Min(width, textureWidth);
         int targetHeight = Mathf.Min(height, textureHeight);
+        
+        // Initialize accumulative mask on first run
+        // SHADER LOGIC: White (255) = scanned (camera), Black (0) = unscanned (stripes)
+        if (useAccumulativeScanning && (accumulativeMask == null || accumulativeMask.Length != targetWidth * targetHeight))
+        {
+            accumulativeMask = new Color32[targetWidth * targetHeight];
+            for (int i = 0; i < accumulativeMask.Length; i++)
+            {
+                accumulativeMask[i] = new Color32(0, 0, 0, 255);  // Start ALL UNSCANNED (black = stripes)
+            }
+            Debug.Log($"[STRIPE MASK] Initialized {targetWidth}x{targetHeight} accumulative mask (CPU path) - all BLACK (unscanned/stripes)");
+        }
         
         Texture2D maskTex = new Texture2D(targetWidth, targetHeight, TextureFormat.R8, false);
         var conversionParams = new XRCpuImage.ConversionParams(image, TextureFormat.RFloat);
@@ -920,14 +1167,21 @@ public class ARCombinedOverlay : MonoBehaviour
         image.Convert(conversionParams, rawDepthData);
         image.Dispose();
         
-        Color32[] pixels = new Color32[targetWidth * targetHeight];
+        Color32[] maskPixels;
+        if (useAccumulativeScanning)
+        {
+            maskPixels = accumulativeMask;  // Work on persistent mask
+        }
+        else
+        {
+            maskPixels = new Color32[targetWidth * targetHeight];  // Fresh mask each frame
+        }
         
-        // DEBUG: Track depth statistics
-        int validDepthCount = 0;
-        int noDepthCount = 0;
+        int blackCount = 0;  // Camera pixels
+        int whiteCount = 0;  // Stripe pixels
+        int newlyScannedCount = 0;  // Pixels scanned this frame
         float minDepth = float.MaxValue;
-        float maxDepth = float.MinValue;
-        float avgDepth = 0;
+        float maxDepth = 0f;
         
         unsafe
         {
@@ -945,44 +1199,180 @@ public class ARCombinedOverlay : MonoBehaviour
                         int srcY = y * skipY;
                         int srcIdx = srcY * width + srcX;
                         float depth = depthPtr[srcIdx];
+                        int maskIdx = y * targetWidth + x;
                         
-                        // Shader blend: result = camera * mask + stripes * (1-mask)
-                        // mask=255 (white) → camera * 1 + stripes * 0 = CAMERA (scanned)
-                        // mask=0 (black) → camera * 0 + stripes * 1 = STRIPES (unscanned)
-                        // FINAL LOGIC: Show CAMERA only if depth is valid AND close (0.01m < depth ≤ threshold)
-                        // Show STRIPES if: depth invalid (≤0.01m = unscanned/new) OR depth far (>threshold)
-                        byte mask = (depth > 0.01f && depth <= incompleteThreshold) ? (byte)255 : (byte)0;
-                        pixels[y * targetWidth + x] = new Color32(mask, mask, mask, 255);
-                        
-                        // Debug statistics
                         if (depth > 0.01f)
                         {
-                            validDepthCount++;
-                            minDepth = Mathf.Min(minDepth, depth);
-                            maxDepth = Mathf.Max(maxDepth, depth);
-                            avgDepth += depth;
+                            if (depth < minDepth) minDepth = depth;
+                            if (depth > maxDepth) maxDepth = depth;
+                        }
+                        
+                        if (useAccumulativeScanning)
+                        {
+                            // ACCUMULATIVE: Once scanned (depth within threshold), mark as WHITE (camera), stays forever
+                            if (depth > 0.01f && depth <= depthThreshold)
+                            {
+                                if (maskPixels[maskIdx].r == 0)  // Was unscanned (black)
+                                {
+                                    newlyScannedCount++;
+                                }
+                                maskPixels[maskIdx] = new Color32(255, 255, 255, 255);  // Scanned = WHITE (camera)
+                            }
+                            // DON'T reset to black - preserve spatial coverage memory
                         }
                         else
                         {
-                            noDepthCount++;
+                            // REAL-TIME: Mask changes every frame based on current depth
+                            if (depth > 0.01f && depth <= depthThreshold)
+                            {
+                                maskPixels[maskIdx] = new Color32(255, 255, 255, 255);  // Scanned = WHITE (camera)
+                            }
+                            else
+                            {
+                                maskPixels[maskIdx] = new Color32(0, 0, 0, 255);  // Unscanned = BLACK (stripes)
+                            }
                         }
+                        
+                        // Count pixels for statistics
+                        if (maskPixels[maskIdx].r == 255)  // White = camera
+                            whiteCount++;
+                        else  // Black = stripes
+                            blackCount++;
                     }
                 }
             }
         }
         
-        // Log depth statistics every 2 seconds
-        if (Time.frameCount % 120 == 0)
+        if (Time.frameCount % 60 == 0)
         {
-            avgDepth = validDepthCount > 0 ? avgDepth / validDepthCount : 0;
-            Debug.Log($"[STRIPE DEPTH] Valid: {validDepthCount}/{targetWidth*targetHeight} ({100f*validDepthCount/(targetWidth*targetHeight):F1}%), " +
-                     $"Range: {minDepth:F2}m - {maxDepth:F2}m, Avg: {avgDepth:F2}m, Threshold: {incompleteThreshold:F2}m");
+            float cameraPct = 100f * whiteCount / (blackCount + whiteCount);
+            string mode = useAccumulativeScanning ? "ACCUMULATIVE CPU" : "REAL-TIME CPU";
+            Debug.Log($"[STRIPE MASK] Frame {Time.frameCount} {mode}: Camera={whiteCount} ({cameraPct:F1}%), Stripes={blackCount}, " +
+                     $"Newly scanned: {newlyScannedCount}, Depth: {minDepth:F2}-{maxDepth:F2}m, Threshold: {depthThreshold}m");
         }
         
-        maskTex.SetPixels32(pixels);
+        if (useAccumulativeScanning)
+        {
+            accumulativeMask = maskPixels;  // Save back to persistent storage
+        }
+        
+        maskTex.SetPixels32(maskPixels);
         maskTex.Apply();
         rawDepthData.Dispose();
         return maskTex;
+    }
+    
+    /// <summary>
+    /// Generate spatial coverage mask from TSDF weight volume (IntelliCap method).
+    /// Areas with high TSDF weight = well-reconstructed = show camera feed.
+    /// Areas with low TSDF weight = unreliable/unscanned = show stripes.
+    /// </summary>
+    Texture2D GenerateMaskFromTSDFWeights()
+    {
+        int targetWidth = textureWidth;
+        int targetHeight = textureHeight;
+        
+        Texture2D maskTex = new Texture2D(targetWidth, targetHeight, TextureFormat.R8, false);
+        Color32[] maskPixels = new Color32[targetWidth * targetHeight];
+        
+        Camera cam = GetComponent<Camera>();
+        if (cam == null)
+        {
+            Debug.LogError("[STRIPE MASK] Camera component not found!");
+            return null;
+        }
+        
+        int blackCount = 0;  // Stripes (unscanned/low weight)
+        int whiteCount = 0;  // Camera (well-scanned/high weight)
+        float minWeight = float.MaxValue;
+        float maxWeight = float.MinValue;
+        
+        // Sample TSDF weight for each pixel
+        for (int y = 0; y < targetHeight; y++)
+        {
+            for (int x = 0; x < targetWidth; x++)
+            {
+                int idx = y * targetWidth + x;
+                
+                // Convert pixel to normalized viewport coordinates (0-1)
+                float u = (float)x / targetWidth;
+                float v = (float)y / targetHeight;
+                
+                // Cast ray from camera through this pixel
+                Ray ray = cam.ViewportPointToRay(new Vector3(u, v, 0));
+                
+                // Sample TSDF weight at a point along the ray (e.g., 1.5m from camera)
+                float sampleDistance = 1.5f;  // Sample at mid-range
+                Vector3 samplePoint = ray.origin + ray.direction * sampleDistance;
+                
+                // Get TSDF weight at this world position (using reflection to avoid assembly reference)
+                float weight = 0f;
+                if (tsdfAtlas != null)
+                {
+                    var method = tsdfAtlas.GetType().GetMethod("SampleWeightAtWorldPosition");
+                    if (method != null)
+                    {
+                        weight = (float)method.Invoke(tsdfAtlas, new object[] { samplePoint });
+                    }
+                    else if (Time.frameCount % 60 == 0 && idx == 0)
+                    {
+                        Debug.LogWarning("[STRIPE MASK] SampleWeightAtWorldPosition method not found!");
+                    }
+                }
+                
+                // Debug log first few samples
+                if (Time.frameCount % 200 == 0 && idx < 5)
+                {
+                    Debug.Log($"[STRIPE MASK] Sample [{x},{y}]: samplePoint={samplePoint}, weight={weight}");
+                }
+                
+                // Track weight range (including 0)
+                if (weight < minWeight) minWeight = weight;
+                if (weight > maxWeight) maxWeight = weight;
+                
+                // Determine if area is scanned based on TSDF weight
+                if (weight >= minTSDFWeight)
+                {
+                    maskPixels[idx] = new Color32(255, 255, 255, 255);  // WHITE = scanned (camera)
+                    whiteCount++;
+                }
+                else
+                {
+                    maskPixels[idx] = new Color32(0, 0, 0, 255);  // BLACK = unscanned (stripes)
+                    blackCount++;
+                }
+            }
+        }
+        
+        // Log statistics
+        float cameraPct = (blackCount + whiteCount > 0) ? 100f * whiteCount / (blackCount + whiteCount) : 0f;
+        Debug.Log($"[STRIPE MASK] F{Time.frameCount} TSDF: Cam={whiteCount}({cameraPct:F1}%) Strip={blackCount} Weight:{minWeight:F2}-{maxWeight:F2} T:{minTSDFWeight}");
+        
+        maskTex.SetPixels32(maskPixels);
+        maskTex.Apply();
+        return maskTex;
+    }
+    
+    /// <summary>
+    /// Reset spatial coverage - all areas become unscanned again (show stripes).
+    /// Useful for testing or demo purposes.
+    /// </summary>
+    public void ResetSpatialCoverage()
+    {
+        if (accumulativeMask != null)
+        {
+            for (int i = 0; i < accumulativeMask.Length; i++)
+            {
+                accumulativeMask[i] = new Color32(0, 0, 0, 255);  // Reset to BLACK = unscanned (stripes)
+            }
+            Debug.Log("[STRIPE MASK] Spatial coverage RESET - all areas now UNSCANNED (black = stripes)");
+        }
+        
+        if (maskTexture != null)
+        {
+            Destroy(maskTexture);
+            maskTexture = null;
+        }
     }
     
     Texture2D GenerateStripeTexture(int width, int height, int stripeWidth)
@@ -1006,14 +1396,6 @@ public class ARCombinedOverlay : MonoBehaviour
         return texture;
     }
     
-    /// <summary>
-    /// Call this to start showing camera feed and depth-based scanning (called when recording starts)
-    /// </summary>
-    public void StartScanning()
-    {
-        forceFullOverlay = false;
-        Debug.Log("✓ Started scanning - camera feed now visible with depth-based stripes");
-    }
     
     void OnDestroy()
     {

@@ -14,7 +14,16 @@ public class DetectionSphereManager : MonoBehaviour
     [Tooltip("Sphere prefab to instantiate. Leave empty for default Unity sphere primitive. Use IntelliCap's LODManager prefab here.")]
     public GameObject spherePrefab;
     public bool enableSpheres = true;
-    public float sphereLifetime = 2.0f; // How long spheres stay visible
+    [Tooltip("Persistent spheres - no time-based deletion. Triangles disappear as areas get scanned.")]
+    public bool usePersistentSpheres = true;
+    public float sphereLifetime = 10.0f; // Only used if usePersistentSpheres = false
+    
+    [Header("Depth Confidence Filtering")]
+    [Tooltip("Enable multi-sample averaging for more stable sphere placement")]
+    public bool useDepthAveraging = true;
+    [Tooltip("Number of samples to average (3x3 grid around detection center)")]
+    public int depthSampleRadius = 1;
+    
     public float minSphereScale = 0.1f;
     public float maxSphereScale = 2.0f;
     [Tooltip("Scaling factor for sphere size. Supervisor spec: radius = max(width, height). Default 1.0 means radius equals max dimension.")]
@@ -49,6 +58,13 @@ public class DetectionSphereManager : MonoBehaviour
     
     [Header("Sphere Tracking")]
     private List<SphereInstance> activeSpheres = new List<SphereInstance>();
+    
+    [Header("Sphere Position Updates")]
+    [Tooltip("Enable smooth position updates when sphere is re-detected")]
+    public bool enablePositionUpdates = true;
+    [Tooltip("Smoothing factor for position updates (0=instant, 1=no movement)")]
+    [Range(0f, 0.9f)]
+    public float positionSmoothingFactor = 0.5f;
     private GameObject sphereContainer;
     private int sphereCounter = 0;
     
@@ -279,15 +295,13 @@ public class DetectionSphereManager : MonoBehaviour
         // Immediately merge overlapping spheres after creating new ones
         MergeOverlappingSpheres();
         
-        // Remove spheres that haven't been matched to any detection for 30 frames (~1 second at 30fps)
-        // This ensures only currently detected objects have spheres
-        CleanupOldSpheres(30);
+        // AGGRESSIVE CLEANUP: Remove spheres not matched for 60 frames (~2 seconds)
+        // Prevents ghost spheres from accumulating
+        CleanupOldSpheres(60);
     }
     
-    /// <summary>
-    /// Check if a screen position is inside or near an existing sphere (screen space check).
-    /// Prevents detecting objects through transparent spheres (mirroring/reflection issue).
-    /// </summary>
+    // DEPRECATED: Use IsScreenPositionCovered instead
+    // This function is kept for backward compatibility but is no longer used
     private bool IsPositionCoveredBySphere(Vector2 screenPos, string classLabel, float radiusMargin = 1.8f)
     {
         foreach (var sphere in activeSpheres)
@@ -326,7 +340,7 @@ public class DetectionSphereManager : MonoBehaviour
     /// </summary>
     private void CreateSphereForDetection(ResultBox detection, int screenWidth, int screenHeight, float cropScaleRatio, float cropOffsetX, float cropOffsetY)
     {
-        Debug.Log($"\n🔵 === SPHERE CREATION START === Class:{detection.bestClassIndex} Conf:{detection.score:P0}");
+        Debug.Log($"\n🔵 === SPHERE CREATION START === Class:{detection.bestClassIndex} Conf:{detection.score:P0} | Active spheres: {activeSpheres.Count}");
         
         // Calculate center of bounding box in YOLO 640x640 space
         float centerX = detection.rect.x + detection.rect.width / 2f;
@@ -341,13 +355,27 @@ public class DetectionSphereManager : MonoBehaviour
         // Apply Y-flip for Unity screen space (Y is inverted)
         Vector2 screenPos = new Vector2(mappedX, screenHeight - mappedY);
         
-        Debug.Log($"Sphere coords: YOLO({centerX:F1},{centerY:F1}) -> Scaled({scaledX:F1},{scaledY:F1}) -> Screen({mappedX:F1},{mappedY:F1})");
+        Debug.Log($"[COORDS] YOLO({centerX:F1},{centerY:F1}) -> Mapped({mappedX:F1},{mappedY:F1}) -> Screen({screenPos.x:F0},{screenPos.y:F0}) [screen size: {Screen.width}x{Screen.height}]");
         
-        // CRITICAL: Check if this position is already covered by an existing sphere
-        // Prevents detecting mirrored/refracted objects through transparent spheres
-        if (IsPositionCoveredBySphere(screenPos, detection.bestClassIndex.ToString()))
+        string className = detection.bestClassIndex.ToString();
+        
+        // EARLY CHECK: Screen-space match (BEFORE expensive depth calculation)
+        SphereInstance matchedSphere = FindSphereAtScreenPosition(screenPos, className, detection.rect.width, detection.rect.height);
+        if (matchedSphere != null && enablePositionUpdates)
         {
-            Debug.Log($"⚠️ Skipping detection at {screenPos} - position already covered by existing sphere (prevents mirroring detection)");
+            // Calculate new position with depth, then update existing sphere
+            float tempDepth = GetConfidenceFilteredDepth(screenPos, Screen.width, Screen.height);
+            if (tempDepth > 0f && tempDepth < 10f)
+            {
+                Ray ray = arCamera.ScreenPointToRay(screenPos);
+                Vector3 newWorldPos = arCamera.transform.position + ray.direction * tempDepth;
+                UpdateSpherePosition(matchedSphere, newWorldPos);
+            }
+            return;
+        }
+        else if (matchedSphere != null)
+        {
+            Debug.Log($"⏭️ Screen position {screenPos} already has sphere (updates disabled) - skipping");
             return;
         }
         
@@ -355,7 +383,8 @@ public class DetectionSphereManager : MonoBehaviour
         float depth = -1f;
         
         // Priority 1: Try direct ARCore depth acquisition (PREFERRED)
-        depth = GetDepthAtScreenPosition(screenPos, screenWidth, screenHeight);
+        // Get depth at detection center - use actual screen dimensions for proper mapping
+        depth = GetConfidenceFilteredDepth(screenPos, Screen.width, Screen.height);
         bool usedARCoreDepth = (depth > 0f && depth < 10f);
         if (usedARCoreDepth)
         {
@@ -365,7 +394,7 @@ public class DetectionSphereManager : MonoBehaviour
         // Priority 2: Try TSDF depth if ARCore depth unavailable (FALLBACK)
         if (!usedARCoreDepth && useTSDFDepth && tsdfVolume != null)
         {
-            depth = GetDepthFromTSDF(screenPos, screenWidth, screenHeight);
+            depth = GetDepthFromTSDF(screenPos, Screen.width, Screen.height);
             if (depth > 0f && depth < 10f)
             {
                 Debug.Log($"📊 Using TSDF fallback depth {depth:F2}m at screen {screenPos}");
@@ -375,7 +404,17 @@ public class DetectionSphereManager : MonoBehaviour
         // Priority 3: Skip sphere creation if no valid depth found (NO OTHER FALLBACKS)
         if (depth <= 0f || depth > 10f)
         {
-            Debug.Log($"⏭️ No valid depth ({depth:F2}m) at {screenPos} from ARCore or TSDF, skipping sphere (prevents inaccurate placement)");
+            Debug.Log($"⏭️ VALIDATION FAILED: Invalid depth ({depth:F2}m) at {screenPos}, skipping sphere (prevents random/ghost spheres)");
+            return;
+        }
+        
+        // VALIDATION: Ensure depth is stable (not a noise spike)
+        // Sample depth again to verify consistency
+        float depthVerification = GetConfidenceFilteredDepth(screenPos, Screen.width, Screen.height);
+        float depthDifference = Mathf.Abs(depth - depthVerification);
+        if (depthDifference > 0.5f) // More than 50cm difference = unstable
+        {
+            Debug.Log($"⏭️ VALIDATION FAILED: Unstable depth {depth:F2}m vs {depthVerification:F2}m (diff:{depthDifference:F2}m > 0.5m), skipping sphere");
             return;
         }
         
@@ -408,9 +447,19 @@ public class DetectionSphereManager : MonoBehaviour
         
         // CRITICAL: Check if this detection's world position overlaps with existing sphere (prevents duplicates)
         // World space checking is more reliable than screen space as it's invariant to camera movement
-        if (IsDetectionOverlapping(worldPos, sphereDiameter, detection.bestClassIndex.ToString()))
+        // Check for world-space overlap with existing spheres of same class
+        // This keeps existing spheres alive by updating lastSeenFrame
+        // Use VERY GENEROUS threshold to prevent duplicates when camera moves
+        SphereInstance overlappingSphere = FindOverlappingSphere(worldPos, sphereDiameter, detection.bestClassIndex.ToString());
+        if (overlappingSphere != null && enablePositionUpdates)
         {
-            Debug.Log($"⏭️ Skipping duplicate sphere - world pos {worldPos} too close to existing sphere of class {detection.bestClassIndex}");
+            UpdateSpherePosition(overlappingSphere, worldPos);
+            Debug.Log($"✓ Detection matched existing sphere - updated position to {worldPos}");
+            return;
+        }
+        else if (overlappingSphere != null)
+        {
+            Debug.Log($"✓ Detection matched existing sphere in world space - keeping original position (updates disabled)");
             return;
         }
         
@@ -432,10 +481,47 @@ public class DetectionSphereManager : MonoBehaviour
     }
     
     /// <summary>
-    /// Check if a detection's world position is too close to existing spheres of the same class.
+    /// Check if screen position already covered by sphere - returns matched sphere for position update.
+    /// Checks screen-space overlap before expensive depth calculation.
+    /// </summary>
+    private SphereInstance FindSphereAtScreenPosition(Vector2 screenPos, string className, float bboxWidth, float bboxHeight)
+    {
+        // AGGRESSIVE: Use 100% of bbox size as screen radius (was 80%)
+        float screenRadius = Mathf.Max(bboxWidth, bboxHeight) * 1.0f;
+        
+        foreach (var sphere in activeSpheres)
+        {
+            if (sphere.gameObject == null) continue;
+            
+            // Check same class only
+            if (sphere.classLabel != className) continue;
+            
+            // Project sphere to screen
+            Vector3 sphereScreen = arCamera.WorldToScreenPoint(sphere.worldPosition);
+            
+            // Skip if behind camera
+            if (sphereScreen.z < 0) continue;
+            
+            // Screen-space distance
+            float screenDist = Vector2.Distance(new Vector2(sphereScreen.x, sphereScreen.y), screenPos);
+            
+            if (screenDist < screenRadius)
+            {
+                // Update last seen to keep it alive
+                sphere.lastSeenFrame = Time.frameCount;
+                Debug.Log($"[DUPLICATE PREVENTION] Screen distance {screenDist:F0}px < threshold {screenRadius:F0}px - matched existing sphere");
+                return sphere;
+            }
+        }
+        
+        return null;
+    }
+    
+    /// <summary>
+    /// Find overlapping sphere for position update - returns matched sphere.
     /// Uses world space distance to prevent duplicates (more reliable than screen space as camera moves).
     /// </summary>
-    private bool IsDetectionOverlapping(Vector3 worldPos, float detectedDiameter, string className)
+    private SphereInstance FindOverlappingSphere(Vector3 worldPos, float detectedDiameter, string className)
     {
         foreach (var sphere in activeSpheres)
         {
@@ -447,17 +533,39 @@ public class DetectionSphereManager : MonoBehaviour
                 // Calculate world space distance between detection and existing sphere
                 float distance = Vector3.Distance(worldPos, sphere.worldPosition);
                 
-                // Combine radii for overlap threshold (with 30% margin)
-                float combinedRadius = (sphere.radius + detectedDiameter * 0.5f) * 1.3f;
+                // ULTRA AGGRESSIVE threshold: 8x combined radius to handle depth uncertainty
+                // When camera moves, depth calculation varies significantly, need huge margin
+                float combinedRadius = (sphere.radius + detectedDiameter * 0.5f) * 8.0f;
                 
                 if (distance < combinedRadius)
                 {
-                    Debug.Log($"🚫 Overlap detected: distance={distance:F2}m < threshold={combinedRadius:F2}m (world space check)");
-                    return true;
+                    // CRITICAL: Update lastSeenFrame so sphere doesn't get deleted
+                    sphere.lastSeenFrame = Time.frameCount;
+                    Debug.Log($"[DUPLICATE PREVENTION] World distance {distance:F2}m < threshold {combinedRadius:F2}m (radius sum × 8.0) - matched existing sphere");
+                    return sphere;
                 }
             }
         }
-        return false;
+        return null;
+    }
+    
+    /// <summary>
+    /// Update existing sphere position with smoothing to track object as camera moves.
+    /// </summary>
+    private void UpdateSpherePosition(SphereInstance sphere, Vector3 newWorldPos)
+    {
+        if (sphere == null || sphere.gameObject == null) return;
+        
+        Vector3 oldPos = sphere.worldPosition;
+        float distance = Vector3.Distance(oldPos, newWorldPos);
+        
+        // Apply exponential smoothing to prevent jittery movement
+        Vector3 smoothedPos = Vector3.Lerp(newWorldPos, oldPos, positionSmoothingFactor);
+        
+        sphere.worldPosition = smoothedPos;
+        sphere.gameObject.transform.position = smoothedPos;
+        
+        Debug.Log($"[POSITION UPDATE] Sphere moved {distance:F3}m (from {oldPos} to {newWorldPos}, smoothed to {smoothedPos})");
     }
     
     /// <summary>
@@ -516,8 +624,151 @@ public class DetectionSphereManager : MonoBehaviour
     }
     
     /// <summary>
+    /// Get depth with multi-sample averaging for stability.
+    /// Note: ARCore confidence texture is GPU-only and not available via CPU acquisition.
+    /// We use spatial averaging of multiple depth samples instead.
+    /// </summary>
+    private float GetConfidenceFilteredDepth(Vector2 screenPos, int screenWidth, int screenHeight)
+    {
+        if (occlusionManager == null)
+        {
+            Debug.LogWarning("OcclusionManager is null - cannot get depth");
+            return -1f;
+        }
+        
+        // Check ARSession state
+        var arSession = UnityEngine.XR.ARFoundation.ARSession.state;
+        if (arSession != UnityEngine.XR.ARFoundation.ARSessionState.SessionTracking)
+        {
+            if (Time.frameCount % 30 == 0)
+            {
+                Debug.LogWarning($"[DEPTH] ARSession state: {arSession} (need SessionTracking)");
+            }
+            return -1f;
+        }
+        
+        // Try CPU image acquisition
+        if (!occlusionManager.TryAcquireEnvironmentDepthCpuImage(out var depthImage))
+        {
+            if (Time.frameCount % 60 == 0)
+            {
+                Debug.LogWarning($"[DEPTH] CPU image unavailable, ensure camera is moving");
+            }
+            return -1f;
+        }
+        
+        // Note: Confidence texture is GPU-only (environmentDepthConfidenceTexture)
+        // CPU depth acquisition doesn't provide confidence data
+        // We rely on multi-sample averaging for stability instead
+        
+        if (!depthEverAcquired)
+        {
+            Debug.Log($"[DEPTH] ✓ DEPTH ACTIVE: {depthImage.width}x{depthImage.height}");
+            Debug.Log($"[DEPTH] Using multi-sample averaging for stability (confidence N/A on CPU)");
+            depthEverAcquired = true;
+        }
+        
+        // Convert screen to depth image coordinates
+        // CRITICAL: ARCore depth image may have different resolution and orientation
+        float normalizedX = screenPos.x / screenWidth;
+        float normalizedY = screenPos.y / screenHeight;
+        
+        // Android ARCore often requires Y-flip for depth sampling
+        #if UNITY_ANDROID
+        normalizedY = 1.0f - normalizedY;
+        #endif
+        
+        int centerX = Mathf.Clamp((int)(normalizedX * depthImage.width), 0, depthImage.width - 1);
+        int centerY = Mathf.Clamp((int)(normalizedY * depthImage.height), 0, depthImage.height - 1);
+        
+        Debug.Log($"[DEPTH COORDS] Screen({screenPos.x:F0},{screenPos.y:F0}) -> Normalized({normalizedX:F2},{normalizedY:F2}) -> Depth({centerX},{centerY}) in {depthImage.width}x{depthImage.height}");
+        
+        // Read depth data
+        var depthParams = new XRCpuImage.ConversionParams(depthImage, TextureFormat.RFloat);
+        int depthDataLength = depthImage.width * depthImage.height * sizeof(float);
+        var depthData = new Unity.Collections.NativeArray<byte>(depthDataLength, Unity.Collections.Allocator.Temp);
+        depthImage.Convert(depthParams, depthData);
+        
+        float finalDepth = -1f;
+        
+        if (useDepthAveraging && depthSampleRadius > 0)
+        {
+            // Multi-sample averaging for stability
+            List<float> validDepths = new List<float>();
+            
+            for (int dy = -depthSampleRadius; dy <= depthSampleRadius; dy++)
+            {
+                for (int dx = -depthSampleRadius; dx <= depthSampleRadius; dx++)
+                {
+                    int sampleX = Mathf.Clamp(centerX + dx, 0, depthImage.width - 1);
+                    int sampleY = Mathf.Clamp(centerY + dy, 0, depthImage.height - 1);
+                    
+                    float depth = GetDepthAtPixel(depthData, sampleX, sampleY, depthImage.width);
+                    
+                    // Skip invalid depths
+                    if (depth <= 0.01f || depth > 5.0f)
+                        continue;
+                    
+                    validDepths.Add(depth);
+                }
+            }
+            
+            // Average valid samples
+            if (validDepths.Count > 0)
+            {
+                // Use median instead of mean for better outlier rejection
+                validDepths.Sort();
+                finalDepth = validDepths[validDepths.Count / 2]; // Median
+                
+                Debug.Log($"[DEPTH] Median of {validDepths.Count} samples -> {finalDepth:F3}m (range: {validDepths[0]:F3}-{validDepths[validDepths.Count-1]:F3})");
+                
+                // Cleanup
+                depthData.Dispose();
+                depthImage.Dispose();
+                
+                return finalDepth;
+            }
+            else
+            {
+                Debug.LogWarning($"[DEPTH] No valid samples found at depth coords ({centerX},{centerY})");
+            }
+        }
+        else
+        {
+            // Single-point sampling
+            float depth = GetDepthAtPixel(depthData, centerX, centerY, depthImage.width);
+            
+            if (depth > 0.01f && depth <= 5.0f)
+            {
+                finalDepth = depth;
+                Debug.Log($"[DEPTH] Single sample at depth coords ({centerX},{centerY}): {finalDepth:F3}m");
+            }
+            else
+            {
+                Debug.LogWarning($"[DEPTH] Invalid depth {depth:F3}m at coords ({centerX},{centerY})");
+            }
+        }
+        
+        // Cleanup
+        depthData.Dispose();
+        depthImage.Dispose();
+        
+        return finalDepth;
+    }
+    
+    private unsafe float GetDepthAtPixel(Unity.Collections.NativeArray<byte> depthData, int x, int y, int width)
+    {
+        fixed (byte* ptr = depthData.ToArray())
+        {
+            float* depthPtr = (float*)ptr;
+            int idx = y * width + x;
+            return depthPtr[idx];
+        }
+    }
+    
+    /// <summary>
     /// Get depth at a specific screen position using ARCore depth map.
-    /// Software-based depth (S24 Ultra) needs tracking to be fully initialized first.
+    /// DEPRECATED: Use GetConfidenceFilteredDepth instead.
     /// </summary>
     private float GetDepthAtScreenPosition(Vector2 screenPos, int screenWidth, int screenHeight)
     {
@@ -713,10 +964,10 @@ public class DetectionSphereManager : MonoBehaviour
                 if (wireframeShader != null)
                 {
                     mat = new Material(wireframeShader);
-                    mat.SetColor("_WireColor", new Color(0.0f, 0.4f, 0.8f, 1.0f)); // IntelliCap blue for wireframe
+                    mat.SetColor("_WireColor", new Color(0.2f, 0.5f, 0.9f, 1.0f)); // Medium blue for wireframe
                     mat.SetFloat("_WireThickness", 1.2f);
                     mat.SetFloat("_WireAlpha", 0.8f);
-                    Debug.Log($"[SPHERE PREFAB] Wireframe shader loaded (IntelliCap blue)");
+                    Debug.Log($"[SPHERE PREFAB] Wireframe shader loaded (medium blue)");
                 }
                 else
                 {
@@ -727,13 +978,13 @@ public class DetectionSphereManager : MonoBehaviour
                     if (fallback != null)
                     {
                         mat = new Material(fallback);
-                        mat.color = new Color(0.0f, 0.4f, 0.8f, 0.6f); // IntelliCap blue with 60% alpha
+                        mat.color = new Color(0.6f, 0.85f, 1.0f, 0.65f); // Whitish-blue with 65% alpha
                     }
                     else
                     {
                         Debug.LogError("[SPHERE PREFAB] Even Sprites/Default not found! Creating default material");
                         mat = new Material(Shader.Find("Standard"));
-                        mat.color = new Color(0.0f, 0.4f, 0.8f, 0.7f); // IntelliCap blue with 70% alpha
+                        mat.color = new Color(0.6f, 0.85f, 1.0f, 0.7f); // Whitish-blue with 70% alpha
                     }
                 }
                 
@@ -829,10 +1080,10 @@ public class DetectionSphereManager : MonoBehaviour
                 if (wireframeShader != null)
                 {
                     mat = new Material(wireframeShader);
-                    mat.SetColor("_WireColor", new Color(0.0f, 0.4f, 0.8f, 1.0f)); // IntelliCap blue for wireframe
+                    mat.SetColor("_WireColor", new Color(0.2f, 0.5f, 0.9f, 1.0f)); // Medium blue for wireframe
                     mat.SetFloat("_WireThickness", 1.2f);
                     mat.SetFloat("_WireAlpha", 0.8f);
-                    Debug.Log($"[SPHERE ICOSPHERE] Wireframe shader loaded (IntelliCap blue)");
+                    Debug.Log($"[SPHERE ICOSPHERE] Wireframe shader loaded (medium blue)");
                 }
                 else
                 {
@@ -843,13 +1094,13 @@ public class DetectionSphereManager : MonoBehaviour
                     if (fallback != null)
                     {
                         mat = new Material(fallback);
-                        mat.color = new Color(0.0f, 0.4f, 0.8f, 0.6f); // IntelliCap blue with 60% alpha
+                        mat.color = new Color(0.6f, 0.85f, 1.0f, 0.65f); // Whitish-blue with 65% alpha
                     }
                     else
                     {
                         Debug.LogError("[SPHERE ICOSPHERE] Even Sprites/Default not found! Creating default material");
                         mat = new Material(Shader.Find("Standard"));
-                        mat.color = new Color(0.0f, 0.4f, 0.8f, 0.7f); // IntelliCap blue with 70% alpha
+                        mat.color = new Color(0.6f, 0.85f, 1.0f, 0.7f); // Whitish-blue with 70% alpha
                     }
                 }
                 
@@ -888,6 +1139,12 @@ public class DetectionSphereManager : MonoBehaviour
     /// </summary>
     private void CleanupOldSpheres(int maxFramesNotSeen)
     {
+        // Skip cleanup if using persistent spheres (they stay until fully scanned)
+        if (usePersistentSpheres)
+        {
+            return;
+        }
+        
         int currentFrame = Time.frameCount;
         int removedCount = 0;
         
@@ -1028,11 +1285,12 @@ public class DetectionSphereManager : MonoBehaviour
                     continue; // Skip - different object types don't merge
                 }
                 
-                // Check if spheres intersect
+                // Check if spheres intersect or are very close
                 float distance = Vector3.Distance(sphere1.worldPosition, sphere2.worldPosition);
                 float radiusSum = sphere1.radius + sphere2.radius;
                 
-                if (distance < radiusSum) // Spheres overlap
+                // AGGRESSIVE: Merge if within 1.5x radius sum (not just touching)
+                if (distance < radiusSum * 1.5f) // More aggressive merging
                 {
                     // Case 1: Complete containment - discard smaller sphere
                     if (distance + sphere1.radius <= sphere2.radius)

@@ -1,0 +1,99 @@
+#pragma kernel GenerateCoverageMask
+
+// TSDF volume and parameters
+Texture3D<float> WeightVolume;
+SamplerState samplerWeightVolume;
+
+float3 VolumeOrigin;
+float3 VolumeSize;      // Resolution in voxels
+float VoxelSize;
+float WeightThreshold;  // Min weight to consider voxel as "scanned"
+
+// Depth texture and camera params
+Texture2D<float> DepthTexture;
+SamplerState samplerDepthTexture;
+float2 DepthResolution;
+
+// Camera matrices
+float4x4 ViewMatrix;
+float4x4 InvViewMatrix;
+float4x4 InvProjectionMatrix;
+
+// Output mask
+RWTexture2D<float> CoverageMask;
+float2 MaskResolution;
+
+// Convert world position to TSDF volume UVW coordinates
+float3 WorldToVolumeUVW(float3 worldPos)
+{
+    // Convert world to volume local space
+    float3 localPos = worldPos - VolumeOrigin;
+    
+    // Convert to voxel coordinates
+    float3 voxelCoords = localPos / VoxelSize;
+    
+    // Convert to UVW (0-1)
+    float3 uvw = voxelCoords / VolumeSize;
+    
+    return uvw;
+}
+
+[numthreads(8,8,1)]
+void GenerateCoverageMask(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= (uint)MaskResolution.x || id.y >= (uint)MaskResolution.y)
+        return;
+    
+    // Convert mask pixel to UV coordinates
+    float2 uv = (float2(id.xy) + 0.5) / MaskResolution;
+    
+    // Sample depth at this pixel
+    float depth = DepthTexture.SampleLevel(samplerDepthTexture, uv, 0);
+    
+    if (depth < 0.01 || depth > 10.0)
+    {
+        // No valid depth - mark as unscanned (0)
+        CoverageMask[id.xy] = 0.0;
+        return;
+    }
+    
+    // Reconstruct world position from depth
+    // Convert UV to NDC (-1 to 1)
+    float2 ndc = uv * 2.0 - 1.0;
+    ndc.y = -ndc.y;  // Flip Y for Unity
+    
+    // Unproject to view space
+    float4 viewPos = mul(InvProjectionMatrix, float4(ndc.x, ndc.y, 1.0, 1.0));
+    viewPos.xyz /= viewPos.w;
+    viewPos.xyz *= depth;
+    
+    // Transform to world space
+    float4 worldPos4 = mul(InvViewMatrix, float4(viewPos.xyz, 1.0));
+    float3 worldPos = worldPos4.xyz / worldPos4.w;
+    
+    // Convert to TSDF volume coordinates
+    float3 volumeUVW = WorldToVolumeUVW(worldPos);
+    
+    // Check if within volume bounds
+    if (volumeUVW.x < 0.0 || volumeUVW.x > 1.0 ||
+        volumeUVW.y < 0.0 || volumeUVW.y > 1.0 ||
+        volumeUVW.z < 0.0 || volumeUVW.z > 1.0)
+    {
+        // Outside volume - mark as unscanned (0)
+        CoverageMask[id.xy] = 0.0;
+        return;
+    }
+    
+    // Sample weight volume
+    float weight = WeightVolume.SampleLevel(samplerWeightVolume, volumeUVW, 0);
+    
+    // If weight exceeds threshold, voxel has been integrated (scanned)
+    if (weight >= WeightThreshold)
+    {
+        CoverageMask[id.xy] = 1.0;  // Scanned - show camera
+    }
+    else
+    {
+        CoverageMask[id.xy] = 0.0;  // Unscanned - show stripes
+    }
+}

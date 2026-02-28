@@ -54,3 +54,8 @@ crashlytics-build.properties
 # Temporary auto-generated Android Assets
 /[Aa]ssets/[Ss]treamingAssets/aa.meta
 /[Aa]ssets/[Ss]treamingAssets/aa/*
+
+# Thesis documentation - excluded from repository
+thesis_doc/
+thesis_doc_revised/
+

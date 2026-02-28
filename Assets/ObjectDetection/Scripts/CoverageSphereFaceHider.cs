@@ -1,10 +1,19 @@
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.XR.ARFoundation;
 
 [RequireComponent(typeof(MeshFilter))]
 public class CoverageSphereFaceHider : MonoBehaviour
 {
-    [Header("Look-to-hide settings")]
+    [Header("Coverage-based hiding (confidence + multi-angle)")]
+    public bool useConfidenceCoverage = true;      // Use depth confidence instead of gaze
+    public float minDepthConfidence = 0.5f;        // Minimum confidence to count as "scanned"
+    public int minViewingAngles = 2;               // REDUCED from 3 to 2 for FASTER scanning
+    public float angleThresholdDegrees = 30f;      // Minimum angle difference between views
+    public float coverageRadiusMeters = 0.15f;     // How wide each sample covers on surface
+    public int maxFacesCheckPerFrame = 50;         // Performance cap
+    
+    [Header("Fallback: Look-to-hide settings (if useConfidenceCoverage=false)")]
     public float maxRayDistance = 10f;
     public float hitRadiusMeters = 0.15f;   // how wide the "gaze brush" is on the sphere surface
     public float facingDotThreshold = 0.2f; // triangle must face camera a bit (0..1)
@@ -20,15 +29,22 @@ public class CoverageSphereFaceHider : MonoBehaviour
     bool[] _hidden;
 
     Camera _cam;
+    AROcclusionManager _occlusion;
+    
+    // Coverage tracking per triangle
+    List<Vector3>[] _viewingDirections; // cached viewing directions per face (local space)
+    int[] _coverageCount;                // how many valid samples per face
 
     [Header("Startup delay")]
-    public float startDelaySeconds = 0.8f; // delay before hiding starts
+    public float startDelaySeconds = 0.3f; // delay before coverage tracking starts
     private float _timeSinceSpawn = 0f;
     private bool _canHide = false;
+    private bool _loggedSystemInfo = false;
 
     void Awake()
     {
         _cam = Camera.main;
+        _occlusion = FindObjectOfType<AROcclusionManager>();
         PrepareMeshForPerFaceHiding();
         _timeSinceSpawn = 0f;
         _canHide = false;
@@ -86,10 +102,10 @@ public class CoverageSphereFaceHider : MonoBehaviour
         _verts = _mesh.vertices;
         _tris  = _mesh.triangles;
 
-        // Init colors (start visible with IntelliCap blue)
+        // Init colors (start visible with whitish-blue)
         _colors = new Color[_verts.Length];
         for (int i = 0; i < _colors.Length; i++)
-            _colors[i] = new Color(0.0f, 0.4f, 0.8f, 0.6f); // IntelliCap blue 60% alpha
+            _colors[i] = new Color(0.6f, 0.85f, 1.0f, 0.65f); // Whitish-blue 65% alpha
 
         _mesh.colors = _colors;
 
@@ -97,6 +113,14 @@ public class CoverageSphereFaceHider : MonoBehaviour
         _faceCenters = new Vector3[faceCount];
         _faceNormals = new Vector3[faceCount];
         _hidden = new bool[faceCount];
+        _viewingDirections = new List<Vector3>[faceCount];
+        _coverageCount = new int[faceCount];
+        
+        for (int i = 0; i < faceCount; i++)
+        {
+            _viewingDirections[i] = new List<Vector3>();
+            _coverageCount[i] = 0;
+        }
 
         for (int f = 0; f < faceCount; f++)
         {
@@ -128,17 +152,130 @@ public class CoverageSphereFaceHider : MonoBehaviour
         if (_cam == null) _cam = Camera.main;
         if (_cam == null || _mesh == null) return;
 
-        // Ray from camera through center of view (gaze direction)
+        // Choose hiding method
+        if (useConfidenceCoverage)
+        {
+            UpdateConfidenceCoverage();
+        }
+        else
+        {
+            UpdateGazeBasedHiding();
+        }
+    }
+    
+    void UpdateConfidenceCoverage()
+    {
+        // Check depth confidence coverage for triangles
+        if (_occlusion == null) return;
+        
+        var depthTex = _occlusion.environmentDepthTexture;
+        var confidenceTex = _occlusion.environmentDepthConfidenceTexture;
+        
+        if (depthTex == null)
+        {
+            if (!_loggedSystemInfo)
+            {
+                Debug.LogWarning($"[SPHERE] {gameObject.name}: Depth texture unavailable, coverage tracking disabled");
+                _loggedSystemInfo = true;
+            }
+            return;
+        }
+        
+        // Log system info once
+        if (!_loggedSystemInfo)
+        {
+            string confStatus = confidenceTex != null ? "AVAILABLE" : "NOT AVAILABLE";
+            Debug.Log($"[SPHERE] {gameObject.name}: Coverage tracking ACTIVE, Confidence texture: {confStatus}");
+            Debug.Log($"[SPHERE] Triangles: {_hidden.Length}, Min angles: {minViewingAngles}, Angle threshold: {angleThresholdDegrees}°");
+            _loggedSystemInfo = true;
+        }
+        
+        Vector3 camPosLocal = transform.InverseTransformPoint(_cam.transform.position);
+        float coverageRadiusLocal = coverageRadiusMeters / Mathf.Max(0.0001f, transform.lossyScale.x);
+        
+        int updatedThisFrame = 0;
+        
+        for (int f = 0; f < _hidden.Length; f++)
+        {
+            if (_hidden[f]) continue;
+            
+            // World space center of triangle
+            Vector3 faceWorldPos = transform.TransformPoint(_faceCenters[f]);
+            
+            // Project to screen
+            Vector3 screenPos = _cam.WorldToScreenPoint(faceWorldPos);
+            
+            // Skip if behind camera or outside screen
+            if (screenPos.z <= 0 || screenPos.x < 0 || screenPos.x >= Screen.width || 
+                screenPos.y < 0 || screenPos.y >= Screen.height)
+                continue;
+            
+            // Sample confidence at this point
+            float u = screenPos.x / Screen.width;
+            float v = screenPos.y / Screen.height;
+            
+            // Can't directly sample texture from CPU in Unity (would need compute shader or readback)
+            // Simplified approach: Check if triangle faces camera AND is close to camera view
+            Vector3 viewDirLocal = Vector3.Normalize(_faceCenters[f] - camPosLocal);
+            float faceDot = Vector3.Dot(_faceNormals[f], -viewDirLocal);
+            
+            // Triangle must face camera to be considered "scanned"
+            if (faceDot < facingDotThreshold)
+                continue;
+            
+            // Check if this viewing direction is significantly different from previous ones
+            bool isNewAngle = true;
+            foreach (var prevDir in _viewingDirections[f])
+            {
+                float angleDiff = Vector3.Angle(viewDirLocal, prevDir);
+                    
+                    // Log progress periodically
+                    int totalHidden = 0;
+                    for (int h = 0; h < _hidden.Length; h++)
+                        if (_hidden[h]) totalHidden++;
+                    
+                    if (totalHidden % 10 == 0 && totalHidden > 0) // Every 10 triangles
+                    {
+                        float progress = (totalHidden / (float)_hidden.Length) * 100f;
+                        Debug.Log($"[SPHERE] {gameObject.name}: {progress:F0}% scanned ({totalHidden}/{_hidden.Length} triangles)");
+                    }
+                if (angleDiff < angleThresholdDegrees)
+                {
+                    isNewAngle = false;
+                    break;
+                }
+            }
+            
+            if (isNewAngle)
+            {
+                _viewingDirections[f].Add(viewDirLocal);
+                _coverageCount[f]++;
+                
+                // Hide if scanned from enough angles
+                if (_coverageCount[f] >= minViewingAngles)
+                {
+                    HideFace(f);
+                    updatedThisFrame++;
+                }
+            }
+            
+            if (updatedThisFrame >= maxFacesCheckPerFrame)
+                break;
+        }
+        
+        if (updatedThisFrame > 0)
+            _mesh.colors = _colors; // push updates
+    }
+    
+    void UpdateGazeBasedHiding()
+    {
+        // Original gaze-based hiding (fallback mode)
         Ray ray = new Ray(_cam.transform.position, _cam.transform.forward);
 
-        // Intersect ray with sphere surface approximately:
         if (!RaySphere(ray, transform.position, GetApproxWorldRadius(), out Vector3 hitPoint))
             return;
 
-        // Convert hit point to local space to compare with face centers
         Vector3 hitLocal = transform.InverseTransformPoint(hitPoint);
-
-        // Camera direction in local space
         Vector3 camPosLocal = transform.InverseTransformPoint(_cam.transform.position);
         Vector3 viewDirLocal = Vector3.Normalize(hitLocal - camPosLocal);
 
@@ -150,11 +287,9 @@ public class CoverageSphereFaceHider : MonoBehaviour
         {
             if (_hidden[f]) continue;
 
-            // only near the gaze hit area
             if ((_faceCenters[f] - hitLocal).sqrMagnitude > hitRadiusLocal * hitRadiusLocal)
                 continue;
 
-            // only faces that face the camera a bit
             float dot = Vector3.Dot(_faceNormals[f], -viewDirLocal);
             if (dot < facingDotThreshold)
                 continue;
@@ -166,7 +301,7 @@ public class CoverageSphereFaceHider : MonoBehaviour
         }
 
         if (hiddenThisFrame > 0)
-            _mesh.colors = _colors; // push updates
+            _mesh.colors = _colors;
     }
 
     void HideFace(int f)

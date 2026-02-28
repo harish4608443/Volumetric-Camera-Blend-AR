@@ -439,6 +439,7 @@ GameObject:
   - component: {fileID: 1863820482}
   - component: {fileID: 1863820481}
   - component: {fileID: 1863820485}
+  - component: {fileID: 1863820487}
   m_Layer: 0
   m_Name: AR Camera
   m_TagString: MainCamera
@@ -593,7 +594,7 @@ Transform:
   m_GameObject: {fileID: 1863820472}
   m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
   m_LocalPosition: {x: 0, y: 0, z: 0}
-  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_LocalScale: {x: 10, y: 10, z: 10}
   m_Children:
   - {fileID: 1433297723}
   m_Father: {fileID: 748656572}
@@ -627,8 +628,11 @@ MonoBehaviour:
   enableStripes: 1
   showCameraUntilScanned: 0
   enablePointCloudRendering: 0
-  forceFullOverlay: 0
-  incompleteThreshold: 2.0
+  useTSDFWeights: 0
+  depthThreshold: 2
+  useAccumulativeScanning: 1
+  minTSDFWeight: 1
+  tsdfAtlas: {fileID: 0}
   enableObjectDetection: 1
   yoloModel: {fileID: 5022602860645237092, guid: 45287b94cc9c3934a87a3ca071497807, type: 3}
   minConfidence: 0.15
@@ -675,6 +679,8 @@ MonoBehaviour:
   voxelSize: 0.05
   truncationDistance: 0.2
   maxDepth: 5
+  minDepthConfidence: 0.5
+  useConfidenceFiltering: 1
   volumeIntegrationShader: {fileID: 4800000, guid: e15096411292bb546b24def508cef3db, type: 3}
   rayMarchShader: {fileID: 4800000, guid: e7465582002cf1d45b2c3fe47c7640cc, type: 3}
   depthColorizeShader: {fileID: 4800000, guid: 876642ec74274fa4b84a06d86529f06f, type: 3}
@@ -712,3 +718,28 @@ MonoBehaviour:
   stepSize: 0.03
   maxSteps: 256
   enableRendering: 1
+--- !u!114 &1863820487
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1863820472}
+  m_Enabled: 0
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: dec4c18e8ec8fa947b5813195e9529e3, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  occlusionManager: {fileID: 0}
+  cameraManager: {fileID: 0}
+  volumeResolution: {x: 256, y: 64, z: 256}
+  voxelSize: 0.02
+  truncationDistance: 0.1
+  maxDepth: 5
+  rayMarchShader: {fileID: 4800000, guid: 26a3c86722b878a4e8dae95051f22597, type: 3}
+  volumeOpacity: 0.3
+  rayMarchStepSize: 0.02
+  maxRayMarchSteps: 128
+  surfaceThreshold: 0.01
+  integrationInterval: 30
+  volumeIntegrationCS: {fileID: 7200000, guid: 50f0add51b17d934eb1650a2349f701a, type: 3}

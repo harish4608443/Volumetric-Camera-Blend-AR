@@ -21,6 +21,12 @@ public class TSDFVolumeAtlas : MonoBehaviour
     public float truncationDistance = 0.2f;
     public float maxDepth = 5.0f;
     
+    [Header("Depth Confidence Filtering")]
+    [Tooltip("Minimum confidence (0-1) to accept depth pixels. 0.5 = 128/255 confidence threshold")]
+    public float minDepthConfidence = 0.5f;
+    [Tooltip("Enable to filter unreliable depth pixels before TSDF integration")]
+    public bool useConfidenceFiltering = true;
+    
     [Header("Shaders")]
     public Shader volumeIntegrationShader;
     public Shader rayMarchShader;
@@ -34,7 +40,8 @@ public class TSDFVolumeAtlas : MonoBehaviour
     public float surfaceThreshold = 0.03f;
     
     [Header("Integration")]
-    public int integrationInterval = 5;
+    [Tooltip("Integrate every N frames (30 = ~1 second at 30 FPS, matches IntelliCap demo)")]
+    public int integrationInterval = 30;
     
     // Volume stored as 2D atlas (ping-pong)
     private RenderTexture tsdfAtlas;
@@ -314,6 +321,21 @@ public class TSDFVolumeAtlas : MonoBehaviour
         Texture depthTex = occlusionManager?.environmentDepthTexture;
         if (depthTex == null) return;
         
+        // Get confidence texture for filtering unreliable pixels
+        Texture confidenceTex = null;
+        if (useConfidenceFiltering)
+        {
+            confidenceTex = occlusionManager?.environmentDepthConfidenceTexture;
+            if (confidenceTex == null)
+            {
+                if (frameCount == 30)
+                {
+                    Debug.LogWarning("[TSDF] Confidence texture not available, using all depth pixels");
+                }
+                useConfidenceFiltering = false;
+            }
+        }
+        
         Camera cam = GetComponent<Camera>();
         
         // Log configuration once
@@ -326,6 +348,15 @@ public class TSDFVolumeAtlas : MonoBehaviour
             Debug.Log($"Camera FOV: {cam.fieldOfView:F1}°");
             Debug.Log($"Volume: {volumeResolution} @ {voxelSize}m/voxel");
             Debug.Log($"Truncation: {truncationDistance}m");
+            if (useConfidenceFiltering && confidenceTex != null)
+            {
+                Debug.Log($"✓ Confidence Filtering: ENABLED (threshold: {minDepthConfidence:F2})");
+                Debug.Log($"  Only reliable depth pixels integrated");
+            }
+            else
+            {
+                Debug.Log($"⚠ Confidence Filtering: DISABLED (using all raw depth)");
+            }
             Debug.Log($"═══════════════════════════════════════");
         }
         
@@ -333,6 +364,19 @@ public class TSDFVolumeAtlas : MonoBehaviour
         integrationMaterial.SetTexture("_DepthTex", depthTex);
         integrationMaterial.SetTexture("_PrevTSDF", tsdfAtlas);
         integrationMaterial.SetTexture("_PrevWeight", weightAtlas);
+        
+        // Setup confidence filtering
+        if (useConfidenceFiltering && confidenceTex != null)
+        {
+            integrationMaterial.SetTexture("_ConfidenceTex", confidenceTex);
+            integrationMaterial.SetFloat("_MinConfidence", minDepthConfidence);
+            integrationMaterial.SetInt("_UseConfidence", 1);
+        }
+        else
+        {
+            integrationMaterial.SetInt("_UseConfidence", 0);
+        }
+        
         integrationMaterial.SetMatrix("_ViewMatrix", cam.worldToCameraMatrix);
         integrationMaterial.SetMatrix("_ProjMatrix", cam.projectionMatrix);
         integrationMaterial.SetVector("_VolumeOrigin", volumeOrigin);

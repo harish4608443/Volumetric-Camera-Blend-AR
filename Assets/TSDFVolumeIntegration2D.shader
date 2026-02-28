@@ -35,6 +35,7 @@ Shader "Custom/TSDFVolumeIntegration2D"
             sampler2D _DepthTex;
             sampler2D _PrevTSDF;
             sampler2D _PrevWeight;
+            sampler2D _ConfidenceTex;     // ARCore confidence texture (0-1 per pixel)
             
             float4x4 _ViewMatrix;
             float4x4 _ProjMatrix;
@@ -44,6 +45,8 @@ Shader "Custom/TSDFVolumeIntegration2D"
             float _TruncDist;
             float _MaxDepth;
             int _SlicesPerRow;
+            float _MinConfidence;          // Minimum confidence threshold (0-1)
+            int _UseConfidence;            // 1 = filter by confidence, 0 = use all
 
             v2f vert (appdata v)
             {
@@ -113,6 +116,16 @@ Shader "Custom/TSDFVolumeIntegration2D"
                     return tex2D(_PrevTSDF, i.uv);
                 }
                 
+                // Filter by confidence - only integrate reliable pixels
+                if (_UseConfidence > 0)
+                {
+                    float confidence = tex2D(_ConfidenceTex, depthUV).r;
+                    if (confidence < _MinConfidence)
+                    {
+                        return tex2D(_PrevTSDF, i.uv);  // Skip unreliable depth
+                    }
+                }
+                
                 // Compute SDF
                 float sdf = depth - voxelCam.z;
                 
@@ -160,9 +173,12 @@ Shader "Custom/TSDFVolumeIntegration2D"
 
             sampler2D _DepthTex;
             sampler2D _PrevWeight;
+            sampler2D _ConfidenceTex;
             
             float4x4 _ViewMatrix;
             float4x4 _ProjMatrix;
+            float _MinConfidence;
+            int _UseConfidence;
             float3 _VolumeOrigin;
             float4 _VolumeResolution;
             float _VoxelSize;
@@ -225,6 +241,16 @@ Shader "Custom/TSDFVolumeIntegration2D"
                 if (depth < 0.01 || depth > _MaxDepth)
                 {
                     return tex2D(_PrevWeight, i.uv);
+                }
+                
+                // Filter by confidence - only integrate reliable pixels
+                if (_UseConfidence > 0)
+                {
+                    float confidence = tex2D(_ConfidenceTex, depthUV).r;
+                    if (confidence < _MinConfidence)
+                    {
+                        return tex2D(_PrevWeight, i.uv);  // Skip unreliable depth
+                    }
                 }
                 
                 float sdf = depth - voxelCam.z;
