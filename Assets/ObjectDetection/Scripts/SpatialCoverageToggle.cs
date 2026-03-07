@@ -29,7 +29,7 @@ public class SpatialCoverageToggle : MonoBehaviour
     public Text buttonText;
     
     [Header("State")]
-    public bool spatialCoverageActive = false; // Start with spatial coverage OFF
+    public bool spatialCoverageActive = true; // Start with TSDF-based spatial coverage ON
     
     private string enableText = "Enable Spatial Coverage";
     private string disableText = "Disable Spatial Coverage";
@@ -84,11 +84,11 @@ public class SpatialCoverageToggle : MonoBehaviour
             buttonText = toggleButton.GetComponentInChildren<Text>();
         }
         
-        // Initialize state - START WITH EVERYTHING DISABLED
-        SetSpatialCoverageActive(false);
+        // Initialize state - START WITH TSDF SPATIAL COVERAGE ENABLED
+        SetSpatialCoverageActive(true);
         UpdateButtonText();
         
-        Debug.Log($"[TOGGLE] ✅ Initialization complete - spatial coverage starts DISABLED");
+        Debug.Log($"[TOGGLE] ✅ Initialization complete - TSDF spatial coverage starts ENABLED");
     }
 
     /// <summary>

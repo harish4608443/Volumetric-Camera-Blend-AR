@@ -86,13 +86,16 @@ Shader "Custom/TSDFVolumeIntegration2D"
                 // Transform to camera space
                 float4 voxelCam = mul(_ViewMatrix, float4(voxelWorld, 1.0));
                 
-                // Behind camera - keep previous
-                if (voxelCam.z <= 0)
+                // Behind camera - keep previous.
+                // Unity camera space: forward = -Z, so objects in FRONT have z < 0.
+                // Voxels with z >= 0 are behind the camera => skip.
+                if (voxelCam.z >= 0)
                 {
                     return tex2D(_PrevTSDF, i.uv);
                 }
                 
-                // Project to screen
+                // Project to screen.
+                // clip.w = -voxelCam.z (positive for forward voxels), so perspective divide is valid.
                 float4 voxelClip = mul(_ProjMatrix, voxelCam);
                 float2 depthUV = (voxelClip.xy / voxelClip.w) * 0.5 + 0.5;
                 
@@ -126,11 +129,15 @@ Shader "Custom/TSDFVolumeIntegration2D"
                     }
                 }
                 
-                // Compute SDF
-                float sdf = depth - voxelCam.z;
+                // Compute SDF: ARCore depth is positive, voxelCam.z is negative for forward voxels.
+                // voxelDepth = -voxelCam.z  =>  sdf = depth - voxelDepth = depth + voxelCam.z
+                float voxelDepth = -voxelCam.z;
+                float sdf = depth - voxelDepth;  // positive = in front of surface, negative = behind
                 
-                // Behind surface truncation
-                if (sdf < -_TruncDist)
+                // Skip voxels outside the truncation band [-truncDist, +truncDist].
+                // Without the upper check, ALL free-space voxels in front of the surface
+                // would get updated every frame, bloating coverage incorrectly.
+                if (sdf < -_TruncDist || sdf > _TruncDist)
                 {
                     return tex2D(_PrevTSDF, i.uv);
                 }
@@ -219,7 +226,8 @@ Shader "Custom/TSDFVolumeIntegration2D"
                 float3 voxelWorld = _VolumeOrigin + (voxel + 0.5) * _VoxelSize;
                 float4 voxelCam = mul(_ViewMatrix, float4(voxelWorld, 1.0));
                 
-                if (voxelCam.z <= 0)
+                // Unity camera space: forward = -Z. Voxels with z >= 0 are behind camera => skip.
+                if (voxelCam.z >= 0)
                 {
                     return tex2D(_PrevWeight, i.uv);
                 }
@@ -253,9 +261,14 @@ Shader "Custom/TSDFVolumeIntegration2D"
                     }
                 }
                 
-                float sdf = depth - voxelCam.z;
+                // voxelDepth = -voxelCam.z (positive). sdf = depth - voxelDepth.
+                float voxelDepth_w = -voxelCam.z;
+                float sdf = depth - voxelDepth_w;
                 
-                if (sdf < -_TruncDist)
+                // Only add weight for voxels within the truncation band.
+                // sdf > 0 means voxel is in FREE SPACE in front of the surface — do NOT fill those.
+                // Without this, all free space voxels accumulate weight and coverage goes 100% in seconds.
+                if (sdf < -_TruncDist || sdf > _TruncDist)
                 {
                     return tex2D(_PrevWeight, i.uv);
                 }

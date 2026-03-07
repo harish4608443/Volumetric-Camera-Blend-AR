@@ -22,8 +22,8 @@ public class TSDFVolumeAtlas : MonoBehaviour
     public float maxDepth = 5.0f;
     
     [Header("Depth Confidence Filtering")]
-    [Tooltip("Minimum confidence (0-1) to accept depth pixels. 0.5 = 128/255 confidence threshold")]
-    public float minDepthConfidence = 0.5f;
+    [Tooltip("Minimum confidence (0-1) to accept depth pixels. Lower = more samples, higher = more reliable")]
+    public float minDepthConfidence = 0.2f;  // 20% confidence - accept more samples while filtering very unreliable pixels
     [Tooltip("Enable to filter unreliable depth pixels before TSDF integration")]
     public bool useConfidenceFiltering = true;
     
@@ -52,7 +52,19 @@ public class TSDFVolumeAtlas : MonoBehaviour
     // Public API for ray marching
     public RenderTexture GetTSDFAtlas() { return tsdfAtlas; }
     public RenderTexture GetWeightAtlas() { return weightAtlas; }
-    public Vector3 volumeCenter { get { return volumeOrigin; } }
+    // volumeCenter is used by TSDFWeightCoverageMask.shader which centers its lookup at this point.
+    // The shader computes: voxelPos = (worldPos - volumeCenter) / voxelSize + res/2
+    // So volumeCenter must be the GEOMETRIC center of the volume, not the corner.
+    public Vector3 volumeCenter
+    {
+        get
+        {
+            return volumeOrigin + new Vector3(
+                volumeResolution.x * voxelSize * 0.5f,
+                volumeResolution.y * voxelSize * 0.5f,
+                volumeResolution.z * voxelSize * 0.5f);
+        }
+    }
     public Vector3Int GetVolumeResolution() { return volumeResolution; }
     public float GetVoxelSize() { return voxelSize; }
     public int GetSlicesPerRow() { return Mathf.CeilToInt(Mathf.Sqrt(volumeResolution.z)); }
@@ -62,12 +74,11 @@ public class TSDFVolumeAtlas : MonoBehaviour
     /// </summary>
     public float SampleTSDFAtWorldPosition(Vector3 worldPos)
     {
-        // Transform world position to volume local space
+        // Transform world position to volume local space (volumeOrigin is the corner, not center)
         Vector3 localPos = worldPos - volumeOrigin;
         
-        // Convert to voxel coordinates
+        // Convert to voxel coordinates (corner-based: voxel 0 = origin corner)
         Vector3 voxelPos = localPos / voxelSize;
-        voxelPos += (Vector3)volumeResolution * 0.5f; // Center offset
         
         // Check bounds
         if (voxelPos.x < 0 || voxelPos.x >= volumeResolution.x ||
@@ -87,12 +98,11 @@ public class TSDFVolumeAtlas : MonoBehaviour
     /// </summary>
     public float SampleWeightAtWorldPosition(Vector3 worldPos)
     {
-        // Transform world position to volume local space
+        // Transform world position to volume local space (volumeOrigin is the corner, not center)
         Vector3 localPos = worldPos - volumeOrigin;
         
-        // Convert to voxel coordinates
+        // Convert to voxel coordinates (corner-based: voxel 0 = origin corner)
         Vector3 voxelPos = localPos / voxelSize;
-        voxelPos += (Vector3)volumeResolution * 0.5f; // Center offset
         
         // Check bounds
         if (voxelPos.x < 0 || voxelPos.x >= volumeResolution.x ||
@@ -136,9 +146,22 @@ public class TSDFVolumeAtlas : MonoBehaviour
     
     void Start()
     {
+        // IMPORTANT: Force runtime values to override whatever Inspector has saved
+        // Inspector values from old serialized builds will always be wrong
+        minDepthConfidence = 0.1f;   // Very low - accept almost all depth pixels
+        useConfidenceFiltering = false;  // DISABLE filtering entirely - accept ALL depth pixels for max coverage
+        maxDepth = 8.0f;             // Accept depth up to 8 meters
+        truncationDistance = 0.15f;  // 15cm truncation band - slightly wider for better coverage
+
+        // Temporary origin placeholder - overridden below in Start() with camera-relative centered origin.
+        // Covers ±3.2m around camera startup position in all axes (X, Y, Z).
+        volumeOrigin = new Vector3(-3.2f, -3.2f, -3.2f); // placeholder; overridden below
+        
         Debug.Log("═══════════════════════════════════════════════════");
         Debug.Log("         TSDF VOLUME FUSION (BACKGROUND)");
         Debug.Log("         Integration active, no rendering");
+        Debug.Log($"         Confidence filtering: DISABLED (accepting all depth)");
+        Debug.Log($"         Volume origin (placeholder): {volumeOrigin} - real origin set after Start()");
         Debug.Log("═══════════════════════════════════════════════════");
         
         // AUTO-FIND all components (no Inspector setup needed!)
@@ -229,7 +252,16 @@ public class TSDFVolumeAtlas : MonoBehaviour
         Debug.Log("[TSDF] Integration-only mode (no visualization)");
         Debug.Log("[TSDF] ARVolumetricBlend provides depth visualization");
         
-        volumeOrigin = transform.position + transform.forward * (volumeResolution.z * voxelSize * 0.5f);
+        // Volume origin: center the volume on the camera startup position in ALL dimensions.
+        // With + forward*0.1 the volume only covered z=0..6.4m (forward hemisphere).
+        // Any wall behind the camera at startup was outside the volume and could never be scanned.
+        // Centering with - forward*halfXY covers z = -(3.2m) .. +(3.2m) from startup in all directions.
+        float halfXY = volumeResolution.x * voxelSize * 0.5f;   // 3.2m
+        volumeOrigin = transform.position
+            - transform.right   * halfXY   // center X around camera
+            - transform.up      * halfXY   // center Y around camera
+            - transform.forward * halfXY;  // center Z around camera (covers full room, not just forward)
+        Debug.Log($"[TSDF] Volume CENTERED on camera: origin={volumeOrigin}, covers ±{halfXY:F1}m in all directions (full room 360°)");
         
         Debug.Log("═══════════════════════════════════════════════════");
         Debug.Log("     TSDF VOLUME ATLAS INITIALIZED SUCCESSFULLY");
@@ -393,6 +425,53 @@ public class TSDFVolumeAtlas : MonoBehaviour
         // Swap
         (tsdfAtlas, tsdfAtlasTemp) = (tsdfAtlasTemp, tsdfAtlas);
         (weightAtlas, weightAtlasTemp) = (weightAtlasTemp, weightAtlas);
+        
+        // DIAGNOSTIC: Sample weight atlas to verify integration (every 60 frames)
+        // Sample Z-slice corresponding to ~1m depth (typical indoor range), NOT atlas center.
+        // Atlas center maps to Z-slice 66 = world depth ~3.4m (outside camera's typical 0.3-2.5m range).
+        if (frameCount % 60 == 0 && frameCount >= 60)
+        {
+            // Z-voxel for 1m depth
+            int slicesPerRowDiag = Mathf.CeilToInt(Mathf.Sqrt(volumeResolution.z));
+            int zVoxel1m = Mathf.Clamp((int)((1.0f - volumeOrigin.z) / voxelSize), 0, volumeResolution.z - 1);
+            int sliceX1m = zVoxel1m % slicesPerRowDiag;
+            int sliceY1m = zVoxel1m / slicesPerRowDiag;
+            int sampleX = sliceX1m * volumeResolution.x + volumeResolution.x / 2 - 16;
+            int sampleY = sliceY1m * volumeResolution.y + volumeResolution.y / 2 - 16;
+            sampleX = Mathf.Clamp(sampleX, 0, weightAtlas.width - 32);
+            sampleY = Mathf.Clamp(sampleY, 0, weightAtlas.height - 32);
+
+            RenderTexture.active = weightAtlas;
+            Texture2D weightSample = new Texture2D(32, 32, TextureFormat.RFloat, false);
+            weightSample.ReadPixels(new Rect(sampleX, sampleY, 32, 32), 0, 0);
+            weightSample.Apply();
+            RenderTexture.active = null;
+            
+            float maxWeight = 0f;
+            float avgWeight = 0f;
+            int nonZeroCount = 0;
+            Color[] pixels = weightSample.GetPixels();
+            foreach (var p in pixels)
+            {
+                avgWeight += p.r;
+                if (p.r > 0.001f)
+                {
+                    nonZeroCount++;
+                    if (p.r > maxWeight) maxWeight = p.r;
+                }
+            }
+            avgWeight /= pixels.Length;
+            
+            Debug.Log($"[TSDF] F{frameCount} Weight@1m-slice: {nonZeroCount}/{pixels.Length} non-zero, max={maxWeight:F2}, avg={avgWeight:F3} (Z-voxel={zVoxel1m} = world depth {volumeOrigin.z + (zVoxel1m+0.5f)*voxelSize:F2}m)");
+            if (nonZeroCount == 0 && frameCount > 300)
+            {
+                // Only warn after 300 frames (~15s) — the GPU mask may still be working even if this slice is zero
+                Debug.LogWarning($"[TSDF] ⚠️ No data at 1m-depth slice after {frameCount} frames. " +
+                    $"This may be OK if camera has not pointed at ~1m - check TSDF GPU % in STRIPE MASK logs.");
+            }
+            
+            Destroy(weightSample);
+        }
         
         if (frameCount == 5)
         {
