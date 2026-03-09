@@ -39,6 +39,18 @@ public class TSDFReliableRenderer : MonoBehaviour
         Debug.Log("═══════════════════════════════════════════════════");
         
         cam = GetComponent<Camera>();
+
+        // ARCombinedOverlay owns the final composite via OnRenderImage.
+        // TSDFReliableRenderer's CommandBuffer at BeforeForwardAlpha writes dark-blue
+        // ray-marched TSDF hits directly onto scanned surfaces — this is the source of
+        // "dark blue particles on walls". Disable entirely when ARCombinedOverlay is active.
+        var overlay = FindObjectOfType<ARCombinedOverlay>(true);
+        if (overlay != null)
+        {
+            Debug.Log("[TSDFReliableRenderer] ARCombinedOverlay present — TSDF ray march rendering DISABLED to prevent dark-blue particle artefacts");
+            enabled = false;
+            return;
+        }
         
         // Auto-find TSDF atlas if not assigned
         if (tsdfAtlas == null)

@@ -924,7 +924,7 @@ MonoBehaviour:
   planeMaterial: {fileID: 2100000, guid: f3e0131474038ca40bdc2367088a1bb6, type: 2}
   showPlanes: 1
   planeVisibilityBoost: 0.8
-  showDebugInfo: 1
+  showDebugInfo: 0
   showVolumetricOnly: 0
   disableDepthColorizer: 1
   depthColorizeShader: {fileID: 4800000, guid: 876642ec74274fa4b84a06d86529f06f, type: 3}
@@ -1067,6 +1067,7 @@ MonoBehaviour:
   showLabelBackground: 1
   labelBgOpacity: 0.6
   verboseLogs: 1
+  debugGeometryAlignment: 0
   enableSpheres: 1
   spherePrefab: {fileID: 0}
   sphereLifetime: 2

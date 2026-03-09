@@ -66,7 +66,7 @@ public class ARVolumetricBlend : MonoBehaviour
     [Header("Depth Visualization")]
     [Range(0f, 1f)]
     [Tooltip("RGB gradient intensity")]
-    public float colorIntensity = 0.7f;
+    public float colorIntensity = 0.0f;
     
     [Range(0.1f, 5f)]
     [Tooltip("Normal calculation strength (surface detail)")]
@@ -110,6 +110,17 @@ public class ARVolumetricBlend : MonoBehaviour
             Debug.LogError("Depth Colorize Shader not assigned!");
             enabled = false;
             return;
+        }
+
+        // ARCombinedOverlay owns the final composite via OnRenderImage.
+        // This CommandBuffer fires at CameraEvent.AfterEverything — which is AFTER OnRenderImage —
+        // so it would overwrite the stripe composite with the rainbow depth gradient (blue/green artefacts).
+        // Disable it now if ARCombinedOverlay exists in the scene (even if currently inactive).
+        var overlay = FindObjectOfType<ARCombinedOverlay>(true); // true = include inactive
+        if (overlay != null)
+        {
+            disableDepthColorizer = true;
+            Debug.Log("[ARVolumetricBlend] ARCombinedOverlay present — depth colorizer DISABLED at startup to prevent blue/green overlay artefacts");
         }
 
         // Create depth visualization material
@@ -198,6 +209,20 @@ public class ARVolumetricBlend : MonoBehaviour
     {
         if (commandBuffer == null || depthMaterial == null) return;
         
+        // Auto-disable if ARCombinedOverlay is active anywhere in the scene —
+        // it owns the final composite (OnRenderImage) and the depth colorizer
+        // would bake a rainbow gradient into the camera frame that bleeds through
+        // in scanned regions as blue/green particles.
+        if (!disableDepthColorizer)
+        {
+            var overlay = FindObjectOfType<ARCombinedOverlay>();
+            if (overlay != null && overlay.enabled)
+            {
+                disableDepthColorizer = true;
+                Debug.Log("[ARVolumetricBlend] ARCombinedOverlay detected — depth colorizer disabled to prevent blue/green gradient artefacts");
+            }
+        }
+
         // Skip rendering if disabled
         if (disableDepthColorizer)
         {
