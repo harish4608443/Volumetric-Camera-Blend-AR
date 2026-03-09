@@ -40,6 +40,7 @@ public class DetectionSphereManager : MonoBehaviour
     [Header("AR Components")]
     private AROcclusionManager occlusionManager;
     private ARRaycastManager raycastManager;
+    private ARAnchorManager anchorManager;
     private Camera arCamera;
     private bool depthEverAcquired = false; // Track if we've ever successfully got depth data
     private Vector3 lastCameraPosition = Vector3.zero; // Track camera movement to reject unreliable fallback spheres
@@ -79,6 +80,7 @@ public class DetectionSphereManager : MonoBehaviour
         public int lastSeenFrame; // Track when this sphere was last matched to a detection
         public Rect screenBounds; // Screen-space bounds for overlap checking
         public int matchCount; // Number of times this sphere has been re-detected; used for converging position
+        public ARAnchor anchor; // null when placed via depth-only path (no anchorManager available or raycast missed)
         
         public SphereInstance(GameObject go, float time, int id, Vector3 pos, string label, float rad, Rect bounds)
         {
@@ -149,6 +151,13 @@ public class DetectionSphereManager : MonoBehaviour
         {
             Debug.Log("[RAYCAST] ARRaycastManager found - available as fallback");
         }
+
+        // Find ARAnchorManager for map-relative anchoring (prevents VIO drift)
+        anchorManager = FindObjectOfType<ARAnchorManager>();
+        if (anchorManager == null)
+            Debug.LogWarning("[ANCHOR] ARAnchorManager not found — anchoring disabled, spheres will use depth-only placement");
+        else
+            Debug.Log("[ANCHOR] ARAnchorManager found — anchors enabled");
         
         // CRITICAL: AR camera must NOT render sphere layer (dedicated sphereCamera handles that)
         if (arCamera != null)
@@ -256,6 +265,13 @@ public class DetectionSphereManager : MonoBehaviour
         
         // Clean up null references
         activeSpheres.RemoveAll(s => s.gameObject == null);
+
+        // Sync world positions from ARAnchor — keeps worldPosition current as ARCore refines the map
+        foreach (var s in activeSpheres)
+        {
+            if (s.anchor != null && s.anchor.gameObject != null)
+                s.worldPosition = s.anchor.transform.position;
+        }
         // MergeOverlappingSpheres() removed: spheres are pinned to initial placement positions.
         // Duplicate prevention at creation time (FindOverlappingSphere) makes merging unnecessary,
         // and the midpoint merge was causing spheres to visually jump between objects.
@@ -362,31 +378,52 @@ public class DetectionSphereManager : MonoBehaviour
         string className = detection.bestClassIndex.ToString();
 
         // ── Step 1: Get the best world position for this detection ──
-        // Priority 1: ARCore depth texture.
-        //   Reads the actual ToF/stereo depth value AT the pixel under the detection centre.
-        //   This is the closest-surface depth, i.e. the object surface itself — not a background plane.
-        // Priority 2: TSDF volume depth.
-        // Priority 3: ARFoundation plane raycast — LAST RESORT ONLY.
-        //   ARRaycastManager hits infinite ARCore planes (floor, wall, ceiling) behind the object,
-        //   placing the sphere on background geometry.  Only use when neither depth source works.
+        // Priority 1: ARFoundation depth-mesh raycast + ARAnchor.
+        //   TrackableType.Depth hits the ARCore depth mesh (real object surfaces), NOT infinite planes.
+        //   Anchor makes the sphere map-relative — survives VIO drift and ARCore map corrections.
+        // Priority 2: ARCore depth texture (camera-relative fallback).
+        //   ray.GetPoint(depth) is VIO-relative; sphere is pinned at creation but has no anchor.
+        // Priority 3: TSDF volume depth.
+        // Priority 4: ARFoundation plane raycast — LAST RESORT ONLY.
+        //   TrackableType.AllTypes hits infinite ARCore planes (floor, wall, ceiling) behind the object.
         Vector3 newWorldPos = Vector3.zero;
         bool worldPosValid = false;
         float depth = -1f;
         string depthSource = "none";
 
-        // Priority 1: ARCore depth texture
-        depth = GetConfidenceFilteredDepth(screenPos, Screen.width, Screen.height);
-        if (depth > 0f && depth < 8f && arCamera != null)
+        // Priority 1: ARFoundation depth-mesh raycast (TrackableType.Depth | FeaturePoint)
+        //   This is the correct raycast type — hits the actual depth mesh, not background planes.
+        if (raycastManager != null && anchorManager != null)
         {
-            float vx = screenPos.x / Screen.width;
-            float vy = screenPos.y / Screen.height;
-            newWorldPos = arCamera.ViewportPointToRay(new Vector3(vx, vy, 0)).GetPoint(depth);
-            worldPosValid = true;
-            depthSource = "depth";
-            Debug.Log($"✅ [DEPTH] depth={depth:F2}m world={newWorldPos}");
+            List<ARRaycastHit> anchorHits = new List<ARRaycastHit>();
+            if (raycastManager.Raycast(screenPos, anchorHits,
+                    TrackableType.Depth | TrackableType.FeaturePoint)
+                && anchorHits.Count > 0 && anchorHits[0].distance < 8f)
+            {
+                newWorldPos = anchorHits[0].pose.position;
+                depth = anchorHits[0].distance;
+                worldPosValid = true;
+                depthSource = "anchor";
+                Debug.Log($"⚓ [ANCHOR] hit={newWorldPos} depth={depth:F2}m");
+            }
         }
 
-        // Priority 2: TSDF depth (fallback)
+        // Priority 2: ARCore depth texture (camera-relative fallback)
+        if (!worldPosValid)
+        {
+            depth = GetConfidenceFilteredDepth(screenPos, Screen.width, Screen.height);
+            if (depth > 0f && depth < 8f && arCamera != null)
+            {
+                float vx = screenPos.x / Screen.width;
+                float vy = screenPos.y / Screen.height;
+                newWorldPos = arCamera.ViewportPointToRay(new Vector3(vx, vy, 0)).GetPoint(depth);
+                worldPosValid = true;
+                depthSource = "depth";
+                Debug.Log($"✅ [DEPTH] depth={depth:F2}m world={newWorldPos}");
+            }
+        }
+
+        // Priority 3: TSDF depth (fallback, disabled by default)
         if (!worldPosValid && useTSDFDepth && tsdfVolume != null)
         {
             depth = GetDepthFromTSDF(screenPos, Screen.width, Screen.height);
@@ -401,7 +438,7 @@ public class DetectionSphereManager : MonoBehaviour
             }
         }
 
-        // Priority 3: ARFoundation plane raycast (last resort — background planes only, use with caution)
+        // Priority 4: ARFoundation plane raycast (last resort — AllTypes hits infinite background planes)
         if (!worldPosValid && raycastManager != null)
         {
             List<ARRaycastHit> hits = new List<ARRaycastHit>();
@@ -468,14 +505,29 @@ public class DetectionSphereManager : MonoBehaviour
         Rect screenBounds = new Rect(screenPos.x - sphereDiameter * 0.5f, screenPos.y - sphereDiameter * 0.5f,
                                      sphereDiameter, sphereDiameter);
 
+        // Create ARAnchor when placed via depth-mesh raycast — makes sphere map-relative, survives VIO drift
+        ARAnchor anchor = null;
+        if (depthSource == "anchor" && anchorManager != null)
+        {
+            anchor = anchorManager.AddAnchor(new Pose(newWorldPos, Quaternion.identity));
+            if (anchor != null)
+                Debug.Log($"⚓ [ANCHOR] Created anchor at {newWorldPos}");
+            else
+                Debug.LogWarning("[ANCHOR] AddAnchor returned null — sphere will be camera-relative");
+        }
+
         GameObject sphere = CreateSphere(newWorldPos, sphereDiameter, detection);
         if (sphere != null)
         {
+            // Parent sphere to anchor so it moves with ARCore map refinements
+            if (anchor != null)
+                sphere.transform.SetParent(anchor.transform, true);
             float radius = sphereDiameter / 2f;
             var sphereInstance = new SphereInstance(sphere, Time.time, sphereCounter++, newWorldPos, className, radius, screenBounds);
             sphereInstance.lastSeenFrame = Time.frameCount;
+            sphereInstance.anchor = anchor;
             activeSpheres.Add(sphereInstance);
-            Debug.Log($"Created sphere at {newWorldPos}, diameter {sphereDiameter:F2}m, class {detection.bestClassIndex}");
+            Debug.Log($"Created sphere at {newWorldPos}, diameter {sphereDiameter:F2}m, class {detection.bestClassIndex}, anchored={anchor != null}");
         }
     }
     
@@ -1167,6 +1219,10 @@ public class DetectionSphereManager : MonoBehaviour
                 if (sphere.gameObject != null)
                 {
                     DestroyImmediate(sphere.gameObject);
+                }
+                if (sphere.anchor != null)
+                {
+                    Destroy(sphere.anchor.gameObject);
                 }
                 activeSpheres.RemoveAt(i);
                 removedCount++;
