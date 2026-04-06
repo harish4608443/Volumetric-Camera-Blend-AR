@@ -40,8 +40,8 @@ public class TSDFVolumeAtlas : MonoBehaviour
     public float surfaceThreshold = 0.03f;
     
     [Header("Integration")]
-    [Tooltip("Integrate every N frames (30 = ~1 second at 30 FPS, matches IntelliCap demo)")]
-    public int integrationInterval = 30;
+    [Tooltip("Integrate every N frames (10 = ~3 integrations/sec at 30 FPS, supervisor-recommended).")]
+    public int integrationInterval = 10;
     
     // Volume stored as 2D atlas (ping-pong)
     private RenderTexture tsdfAtlas;
@@ -150,12 +150,18 @@ public class TSDFVolumeAtlas : MonoBehaviour
         // Inspector values from old serialized builds will always be wrong
         minDepthConfidence = 0.1f;   // Very low - accept almost all depth pixels
         useConfidenceFiltering = false;  // DISABLE filtering entirely - accept ALL depth pixels for max coverage
-        maxDepth = 8.0f;             // Accept depth up to 8 meters
-        truncationDistance = 0.15f;  // 15cm truncation band - slightly wider for better coverage
+        // Outdoor-optimised settings:
+        //   voxelSize 0.15 m → volume covers 128×0.15 = 19.2 m per axis (±9.6 m from camera startup).
+        //   This handles outdoor surfaces at 5–15 m that were outside the old ±3.2 m indoor cube.
+        //   truncationDistance must be ≥2×voxelSize so surface bands are not skipped by integration;
+        //   0.35 m = 2.3×0.15 m satisfies this and gives a robust fusion band outdoors.
+        voxelSize = 0.15f;           // 15 cm voxels — outdoor coverage (was 5 cm / ±3.2 m)
+        maxDepth = 15.0f;            // Accept depth up to 15 metres for outdoor surfaces
+        truncationDistance = 0.35f;  // Must be ≥2×voxelSize; 35 cm for robust outdoor fusion
 
         // Temporary origin placeholder - overridden below in Start() with camera-relative centered origin.
-        // Covers ±3.2m around camera startup position in all axes (X, Y, Z).
-        volumeOrigin = new Vector3(-3.2f, -3.2f, -3.2f); // placeholder; overridden below
+        // Covers ±9.6 m around camera startup position in all axes (X, Y, Z).
+        volumeOrigin = new Vector3(-9.6f, -9.6f, -9.6f); // placeholder; overridden below
         
         Debug.Log("═══════════════════════════════════════════════════");
         Debug.Log("         TSDF VOLUME FUSION (BACKGROUND)");

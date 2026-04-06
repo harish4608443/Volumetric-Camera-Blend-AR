@@ -127,14 +127,17 @@ Shader "Custom/DepthColorize"
                 // For depth sampling, detect orientation and adjust UV accordingly
                 float2 depthUV = i.uv;
                 
-                // Check if we're in portrait mode
+                // Portrait mode only: rotate portrait screen UV to match landscape sensor depth texture.
+                // Sensor is always landscape (wider than tall); portrait display = sensor rotated 90° CCW.
+                // To map portrait → sensor (90° CW): new_x = y,  new_y = 1 - x
+                // (previous code had new_x = 1-y which introduced a horizontal flip)
                 float aspectRatio = _ScreenParams.x / _ScreenParams.y;
                 if (aspectRatio < 1.0)
                 {
-                    // Portrait mode - rotate depth UV 90 degrees
-                    float2 centered = depthUV - 0.5;
-                    depthUV.x = -centered.y + 0.5;
-                    depthUV.y = centered.x + 0.5;
+                    float px = depthUV.x;
+                    float py = depthUV.y;
+                    depthUV.x = py;
+                    depthUV.y = 1.0 - px;
                 }
                 
                 // Sample depth with orientation-corrected UV

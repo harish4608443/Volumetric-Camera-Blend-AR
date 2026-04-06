@@ -438,28 +438,11 @@ public class DetectionSphereManager : MonoBehaviour
             }
         }
 
-        // Priority 4: ARFoundation plane raycast (last resort — AllTypes hits infinite background planes)
-        if (!worldPosValid && raycastManager != null)
-        {
-            List<ARRaycastHit> hits = new List<ARRaycastHit>();
-            if (raycastManager.Raycast(screenPos, hits, TrackableType.AllTypes) && hits.Count > 0)
-            {
-                float rcDepth = Vector3.Distance(arCamera.transform.position, hits[0].pose.position);
-                // Reject hits beyond 5m — those are almost certainly background planes, not the object
-                if (rcDepth < 5f)
-                {
-                    newWorldPos = hits[0].pose.position;
-                    depth = rcDepth;
-                    worldPosValid = true;
-                    depthSource = "raycast";
-                    Debug.Log($"⚠️ [RAYCAST fallback] hit={newWorldPos} depth={depth:F2}m");
-                }
-                else
-                {
-                    Debug.Log($"⛔ [RAYCAST rejected] depth={rcDepth:F2}m > 5m (background plane)");
-                }
-            }
-        }
+        // Priority 4 (plane raycast with TrackableType.AllTypes) — REMOVED.
+        // AllTypes hits infinite ARCore floor/ceiling/wall planes, which caused spheres to appear
+        // on floor ventilators and other horizontal surfaces when P1–P3 depth all failed.
+        // If no reliable depth is available from P1–P3, no sphere is created. This is preferable
+        // to anchoring a sphere to a floor plane that has nothing to do with the detected object.
 
         // ── Step 2: Check for existing sphere ──
         SphereInstance matchedSphere = FindSphereAtScreenPosition(screenPos, className, detection.rect.width, detection.rect.height);
@@ -487,6 +470,15 @@ public class DetectionSphereManager : MonoBehaviour
         if (!worldPosValid)
         {
             Debug.Log($"⏭️ No valid world position for {screenPos}, skipping sphere");
+            return;
+        }
+
+        // Reject detections where depth < 0.4 m — these are objects at the user's feet or hands.
+        // The ARCore structured-light depth sensor is unreliable below ~0.3 m, and anything this
+        // close is very unlikely to be a meaningful scene object (floor vent, shoe, hand, etc.).
+        if (depth < 0.4f)
+        {
+            Debug.Log($"⏭️ Rejected: depth {depth:F2}m < 0.4 m minimum — floor/hand artefact");
             return;
         }
 
@@ -786,13 +778,16 @@ public class DetectionSphereManager : MonoBehaviour
                 }
             }
             
-            // Use median for outlier rejection
+            // Use MINIMUM depth (not median) — the closest valid sample is the foreground object surface.
+            // Using the median on a centre-crop of the bounding box often averages in background
+            // pixels (wall/floor behind the object), placing the sphere too far back. The minimum
+            // picks the nearest real surface within the window, which is always the detected object.
             if (validDepths.Count > 0)
             {
                 validDepths.Sort();
-                finalDepth = validDepths[validDepths.Count / 2]; // Median
+                finalDepth = validDepths[0]; // Minimum = closest surface = the foreground object
                 
-                Debug.Log($"[DEPTH] Median of {validDepths.Count} samples -> {finalDepth:F3}m (range: {validDepths[0]:F3}-{validDepths[validDepths.Count-1]:F3})");
+                Debug.Log($"[DEPTH] Min of {validDepths.Count} samples -> {finalDepth:F3}m (range: {validDepths[0]:F3}-{validDepths[validDepths.Count-1]:F3})");
                 
                 // Cleanup
                 depthData.Dispose();

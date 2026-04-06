@@ -36,6 +36,14 @@ public class SpatialCoverageToggle : MonoBehaviour
 
     void Start()
     {
+        // Lock to portrait-only — prevents horizontal flip and broken sphere placement
+        // that occur when auto-rotation switches the app to landscape.
+        Screen.orientation = ScreenOrientation.Portrait;
+        Screen.autorotateToLandscapeLeft = false;
+        Screen.autorotateToLandscapeRight = false;
+        Screen.autorotateToPortraitUpsideDown = false;
+        Debug.Log("[TOGGLE] Screen locked to portrait mode — horizontal flip disabled");
+
         Debug.Log("=== Spatial Coverage Toggle Starting ===");
         
         // Auto-find components if not assigned (use string-based search to avoid assembly issues)

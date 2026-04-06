@@ -33,7 +33,7 @@ public class ARCombinedOverlay : MonoBehaviour
     [Header("TSDF Weight Method (IntelliCap)")]
     [Tooltip("Minimum TSDF weight to consider area scanned")]
     [Range(0.01f, 10.0f)]
-    public float minTSDFWeight = 0.01f;  // Areas with weight >= 0.01 show camera feed (very responsive, shows coverage after 1 frame)
+    public float minTSDFWeight = 5.0f;   // Requires ~17 integration frames (~5-6 s of direct observation) before area clears — suitable for outdoor scanning
     [Tooltip("TSDFVolumeAtlas component for weight-based spatial coverage")]
     public MonoBehaviour tsdfAtlas;  // Auto-found if not assigned (uses MonoBehaviour to avoid assembly reference issues)
     [Tooltip("Shader for generating coverage mask from TSDF weights (GPU-accelerated)")]
@@ -41,13 +41,15 @@ public class ARCombinedOverlay : MonoBehaviour
     
     private int textureWidth = 128;
     private int textureHeight = 128;
-    private float depthModeEnabledTime = -1f;  // Track when depth mode becomes enabled
+#pragma warning disable 0414 // legacy fields retained for potential reuse
+    private float depthModeEnabledTime = -1f;
+    private bool tsdfAutoFallbackTriggered = false;
+    private Color32[] tsdfLastValidMaskPixels;
+#pragma warning restore 0414
     private Color32[] accumulativeMask;  // Persistent spatial coverage memory
     private int tsdfAtlasRetryCount = 0;  // Retry finding TSDF atlas in first few frames
     private Material tsdfWeightMaskMaterial;  // GPU material for TSDF weight coverage masking
     private int tsdfZeroWeightCount = 0;  // Track consecutive frames with zero TSDF weights (for auto-fallback)
-    private bool tsdfAutoFallbackTriggered = false;  // Flag to prevent log spam
-    private Color32[] tsdfLastValidMaskPixels;  // Last mask produced from a REAL ARCore depth frame (not stale)
     private System.IntPtr tsdfLastDepthNativePtr = System.IntPtr.Zero;  // Detects when ARCore depth texture actually updates
     
     [Header("YOLO Detection Settings")]
@@ -55,7 +57,7 @@ public class ARCombinedOverlay : MonoBehaviour
     [Tooltip("YOLOv8 ONNX model file")]
     public NNModel yoloModel;
     [Range(0.0f, 1f)]
-    public float minConfidence = 0.40f;  // 40% confidence - filters out most false positives
+    public float minConfidence = 0.60f;  // 60% confidence - reduces floor/background false positives
     public int detectionInterval = 7;  // Every 7th frame - WORKING SETTING
     public float minBoxSize = 15f;
      
@@ -91,6 +93,8 @@ public class ARCombinedOverlay : MonoBehaviour
     [Header("Debug")]
     [Tooltip("Enable detailed per-frame logs for debugging.")]
     public bool verboseLogs = true;  // ENABLED for debugging
+    [Tooltip("Show TSDF weight gradient instead of binary mask. Well-scanned areas (high weight) show full camera feed; barely-scanned areas blend in stripes. Reveals geometry alignment mismatches.")]
+    public bool debugGeometryAlignment = false;
     
     [Header("3D Sphere Visualization")]
     public bool enableSpheres = true;
@@ -103,9 +107,12 @@ public class ARCombinedOverlay : MonoBehaviour
     // Stripe overlay components
     private Texture2D stripeTexture;
     private Texture2D maskTexture;
+    private RenderTexture coverageMaskRT; // Persistent GPU RT updated every frame — no CPU readback
     private Material blitMaterial;
     private AROcclusionManager occlusionManager;
-    private int stripeFrameCounter = 0;
+#pragma warning disable 0414
+    private int stripeFrameCounter = 0; // retained; was used by old CPU readback path
+#pragma warning restore 0414
     private bool hasDepthData = false;  // Track if we've received any depth data yet
     
     // YOLO detection components
@@ -136,7 +143,10 @@ public class ARCombinedOverlay : MonoBehaviour
     {
         Debug.Log("=== ARCombinedOverlay Starting ===");
         Debug.Log($"Stripes: {enableStripes}, Detection: {enableObjectDetection}, Spheres: {enableSpheres}");
-        
+
+        // ARVolumetricBlend self-disables its depth colorizer when it detects ARCombinedOverlay is active.
+        // (handled in ARVolumetricBlend.LateUpdate — no action needed here)
+
         // Disable point cloud rendering (red dots)
         if (!enablePointCloudRendering)
         {
@@ -207,9 +217,9 @@ public class ARCombinedOverlay : MonoBehaviour
         {
             // FORCE all values at runtime - Inspector serialized values are always wrong after rebuilds
             useTSDFWeights = true;
-            minTSDFWeight = 0.01f;      // Any voxel with ANY weight = seen area
+            minTSDFWeight = 5.0f;       // ~17 integrations (~5-6s continuous scan) before stripes clear — genuine outdoor look-around required
             
-            Debug.Log("[STRIPE] Runtime override: useTSDFWeights=true, minTSDFWeight=0.01 (distance-based fallback DISABLED)");
+            Debug.Log("[STRIPE] Runtime override: useTSDFWeights=true, minTSDFWeight=2.0 (requires real scanning before stripes clear)");
             
             // Auto-find TSDF atlas
             if (tsdfAtlas == null)
@@ -287,11 +297,14 @@ public class ARCombinedOverlay : MonoBehaviour
                 return;
             }
             
-            // Ensure minimum confidence threshold (don't override Inspector value unless too low)
-            if (minConfidence < 0.25f)
+            // Enforce minimum confidence at 0.60 — values below this let through enough
+            // floor-texture false positives (vent covers, floor patterns, shoes) to place
+            // spurious spheres on the ground. 60% eliminates most of these without
+            // losing legitimate high-confidence object detections.
+            if (minConfidence < 0.60f)
             {
-                Debug.LogWarning($"[YOLO] Confidence threshold {minConfidence} too low, forcing to 0.35f");
-                minConfidence = 0.35f;
+                Debug.LogWarning($"[YOLO] Confidence threshold {minConfidence} below 0.60, forcing up to reduce floor false positives");
+                minConfidence = 0.60f;
             }
             
             Debug.Log($"Loading YOLO model: {yoloModel.name}");
@@ -503,148 +516,131 @@ public class ARCombinedOverlay : MonoBehaviour
     
     void ApplyStripeOverlay(RenderTexture src, RenderTexture dest)
     {
-        // DEBUG: Log every call to confirm method is being executed
-        if (Time.frameCount % 90 == 0)
-        {
-            Debug.Log($"[STRIPE OVERLAY] F{Time.frameCount} ApplyStripeOverlay CALLED - blitMat={blitMaterial != null}, stripeTex={stripeTexture != null}");
-        }
-        
-        // SAFETY: If shader failed to load, just show camera feed
+        // SAFETY: If shader or stripe texture not ready, show camera feed
         if (blitMaterial == null || stripeTexture == null)
         {
             Graphics.Blit(src, dest);
             return;
         }
-        
-        // If mask is null, leave it null — let the generator below create it, or it stays null (all-stripes)
-        
-        // Generate mask VERY frequently to show stripes in real-time
-        // Every 3 frames for first 60 seconds, then every 10 frames
-        int currentUpdateInterval = (Time.time < 60f) ? 3 : 10;
-        
-        // Generate mask every N frames OR if maskTexture is null (keep trying until depth available)
-        stripeFrameCounter++;
-        
-        if (Time.frameCount % 90 == 0)
+
+        // Ensure persistent GPU coverage mask RT exists (avoids per-frame GC allocation)
+        if (coverageMaskRT == null || !coverageMaskRT.IsCreated())
         {
-            Debug.Log($"[STRIPE COUNTER] F{Time.frameCount} counter={stripeFrameCounter}, interval={currentUpdateInterval}, maskTexIsNull={maskTexture == null}, willRegenerate={(stripeFrameCounter >= currentUpdateInterval || maskTexture == null)}");
+            coverageMaskRT = new RenderTexture(textureWidth, textureHeight, 0, RenderTextureFormat.R8);
+            coverageMaskRT.name = "CoverageMaskRT";
+            coverageMaskRT.Create();
+            Debug.Log($"[STRIPE MASK] Created persistent coverageMaskRT {textureWidth}x{textureHeight}");
         }
-        
-        if (stripeFrameCounter >= currentUpdateInterval || maskTexture == null)
+
+        // Render TSDF coverage mask every frame directly to a GPU RT (no CPU readback).
+        // Camera matrices (_InvViewMatrix, _InvProjMatrix) change every frame as the device
+        // moves — re-rendering each frame keeps the mask correctly aligned with the view.
+        if (useTSDFWeights && tsdfAtlas != null && tsdfAtlas.enabled)
         {
-            stripeFrameCounter = 0;
-            
-            if (Time.frameCount % 90 == 0)
-            {
-                Debug.Log($"[STRIPE REGEN] F{Time.frameCount} REGENERATING mask now");
-            }
-            
-            Texture2D newMask = GenerateMaskTexture();
-            if (newMask != null)
-            {
-                maskTexture = newMask;
+            if (RenderCoverageMaskToRT())
                 hasDepthData = true;
-                
-                // DEBUG: Log mask contents to diagnose black mask issue
-                if (Time.frameCount % 90 == 0)
-                {
-                    Color32[] pixels = maskTexture.GetPixels32();
-                    int whiteCount = 0;
-                    int blackCount = 0;
-                    foreach (var p in pixels)
-                    {
-                        if (p.r > 128) whiteCount++;
-                        else blackCount++;
-                    }
-                    float whitePct = 100f * whiteCount / pixels.Length;
-                    Debug.Log($"[MASK CONTENT] F{Time.frameCount} Mask has {whiteCount} white ({whitePct:F1}%), {blackCount} black pixels. Size: {maskTexture.width}x{maskTexture.height}");
-                    
-                    if (whiteCount == 0)
-                    {
-                        Debug.LogError($"[MASK CONTENT] ❌❌❌ MASK IS ALL BLACK! This causes pink-white stripes everywhere!");
-                    }
-                }
-                
-                // Track when depth first becomes available
-                if (depthModeEnabledTime < 0)
-                {
-                    depthModeEnabledTime = Time.time;
-                    Debug.Log($"[STRIPE] Depth data first acquired at {depthModeEnabledTime:F1}s (frame {Time.frameCount})");
-                }
-            }
-            else
-            {
-                if (Time.frameCount % 90 == 0)
-                {
-                    Debug.LogWarning($"[STRIPE] Frame {Time.frameCount}: Failed to generate mask - depth not available yet");
-                }
-            }
         }
-        else if (Time.frameCount % 90 == 0)
-        {
-            Debug.Log($"[STRIPE] Frame {Time.frameCount}: Using existing mask (counter={stripeFrameCounter}/{currentUpdateInterval}, time={Time.time:F1}s)");
-        }
-       
-        // Show camera feed if no depth data yet and showCameraUntilScanned is enabled
+
+        // Show plain camera feed while waiting for first depth frame
         if (showCameraUntilScanned && !hasDepthData)
         {
-            if (Time.frameCount % 90 == 0)
-            {
-                Debug.Log("[STRIPE] Showing camera feed - waiting for depth data");
-            }
             Graphics.Blit(src, dest);
             return;
         }
-        
-        // If still no mask texture, show all stripes until TSDF has scanned something
-        if (maskTexture == null)
+
+        // No depth data yet → full stripes (correct: scene is entirely unscanned)
+        if (!hasDepthData)
         {
-            if (Time.frameCount % 90 == 0)
-            {
-                Debug.LogWarning("[STRIPE] No mask texture yet — showing all stripes (nothing scanned)");
-            }
-            // Create all-black mask: stripes everywhere until TSDF accumulates coverage
-            maskTexture = new Texture2D(64, 64, TextureFormat.R8, false);
-            Color32[] blackPixels = new Color32[64 * 64];
-            for (int i = 0; i < blackPixels.Length; i++)
-            {
-                blackPixels[i] = new Color32(0, 0, 0, 255);  // All black = stripes everywhere
-            }
-            maskTexture.SetPixels32(blackPixels);
-            maskTexture.Apply();
+            blitMaterial.SetTexture("_CameraTex", src);
+            blitMaterial.SetTexture("_MaskTex", Texture2D.blackTexture);
+            blitMaterial.SetTexture("_StripeTex", stripeTexture);
+            Graphics.Blit(src, dest, blitMaterial);
+            return;
         }
-        
-        // DEBUG: Check current mask contents every 90 frames
-        if (Time.frameCount % 90 == 0 && maskTexture != null)
-        {
-            Color32[] pixels = maskTexture.GetPixels32();
-            int whiteCount = 0;
-            int blackCount = 0;
-            foreach (var p in pixels)
-            {
-                if (p.r > 128) whiteCount++;
-                else blackCount++;
-            }
-            float whitePct = 100f * whiteCount / pixels.Length;
-            Debug.Log($"[CURRENT MASK] F{Time.frameCount} CHECKING ACTIVE MASK: {whiteCount} white ({whitePct:F1}%), {blackCount} black. Size: {maskTexture.width}x{maskTexture.height}");
-            
-            if (whiteCount == 0)
-            {
-                Debug.LogError($"[CURRENT MASK] ❌❌❌ ACTIVE MASK IS ALL BLACK! This causes full pink-white stripes!");
-            }
-            else if (whitePct < 1.0f)
-            {
-                Debug.LogWarning($"[CURRENT MASK] ⚠️ Mask is {whitePct:F1}% camera (very little). Most of screen will be stripes.");
-            }
-        }
-        
-        // Apply stripes overlay on camera feed
+
+        if (Time.frameCount % 90 == 0)
+            Debug.Log($"[STRIPE OVERLAY] F{Time.frameCount} GPU mask {coverageMaskRT?.width}x{coverageMaskRT?.height} debugGeom={debugGeometryAlignment}");
+
+        // Composite: camera feed where TSDF weight >= threshold, stripes where unscanned.
+        // When debugGeometryAlignment=true the shader outputs a weight gradient (not binary)
+        // so well-scanned areas show full camera and barely-scanned areas blend in stripes,
+        // making geometry alignment mismatches visually obvious.
         blitMaterial.SetTexture("_CameraTex", src);
-        blitMaterial.SetTexture("_MaskTex", maskTexture);
+        blitMaterial.SetTexture("_MaskTex", coverageMaskRT);
         blitMaterial.SetTexture("_StripeTex", stripeTexture);
         Graphics.Blit(src, dest, blitMaterial);
     }
-    
+
+    /// <summary>
+    /// Renders the TSDF weight coverage mask every frame to a persistent GPU RenderTexture.
+    /// No CPU ReadPixels — the RenderTexture is passed directly to the composite shader.
+    /// Returns true when the GPU blit succeeded with valid TSDF data.
+    /// </summary>
+    bool RenderCoverageMaskToRT()
+    {
+        try
+        {
+            if (tsdfAtlas == null) return false;
+
+            Texture depthTex = occlusionManager?.environmentDepthTexture;
+            if (depthTex == null) return false;
+
+            // Get TSDF weight atlas via reflection
+            var getWeightMethod = tsdfAtlas.GetType().GetMethod("GetWeightAtlas");
+            if (getWeightMethod == null) return false;
+            RenderTexture weightAtlas = getWeightMethod.Invoke(tsdfAtlas, null) as RenderTexture;
+            if (weightAtlas == null) return false;
+
+            // Initialize coverage mask material once
+            if (tsdfWeightMaskMaterial == null)
+            {
+                if (tsdfWeightMaskShader == null)
+                    tsdfWeightMaskShader = Shader.Find("TSDFWeightCoverageMask");
+                if (tsdfWeightMaskShader == null)
+                {
+                    Debug.LogError("[STRIPE MASK] TSDFWeightCoverageMask shader not found!");
+                    return false;
+                }
+                tsdfWeightMaskMaterial = new Material(tsdfWeightMaskShader);
+                Debug.Log("[STRIPE MASK] Created TSDFWeightCoverageMask material");
+            }
+
+            // Get TSDF volume parameters via reflection
+            var volumeOrigin  = (Vector3)tsdfAtlas.GetType().GetProperty("volumeCenter").GetValue(tsdfAtlas);
+            var volumeRes     = (Vector3Int)tsdfAtlas.GetType().GetMethod("GetVolumeResolution").Invoke(tsdfAtlas, null);
+            float voxelSize   = (float)tsdfAtlas.GetType().GetMethod("GetVoxelSize").Invoke(tsdfAtlas, null);
+            int slicesPerRow  = (int)tsdfAtlas.GetType().GetMethod("GetSlicesPerRow").Invoke(tsdfAtlas, null);
+            int sliceRowCount = Mathf.CeilToInt((float)volumeRes.z / slicesPerRow);
+
+            // Per-frame shader parameters (camera matrices change each frame with device movement)
+            Camera cam = GetComponent<Camera>();
+            tsdfWeightMaskMaterial.SetTexture("_WeightAtlas", weightAtlas);
+            tsdfWeightMaskMaterial.SetTexture("_DepthTex", depthTex);
+            tsdfWeightMaskMaterial.SetFloat("_WeightThreshold", minTSDFWeight);
+            tsdfWeightMaskMaterial.SetVector("_VolumeOrigin", volumeOrigin);
+            tsdfWeightMaskMaterial.SetVector("_VolumeResolution", new Vector3(volumeRes.x, volumeRes.y, volumeRes.z));
+            tsdfWeightMaskMaterial.SetFloat("_VoxelSize", voxelSize);
+            tsdfWeightMaskMaterial.SetInt("_SlicesPerRow", slicesPerRow);
+            tsdfWeightMaskMaterial.SetInt("_SliceRowCount", sliceRowCount);
+            tsdfWeightMaskMaterial.SetMatrix("_InvViewMatrix", cam.cameraToWorldMatrix);
+            tsdfWeightMaskMaterial.SetMatrix("_InvProjMatrix", cam.projectionMatrix.inverse);
+            tsdfWeightMaskMaterial.SetFloat("_DebugWeights", debugGeometryAlignment ? 1f : 0f);
+
+            // GPU blit to persistent RT — no CPU ReadPixels, no GC pressure
+            Graphics.Blit(null, coverageMaskRT, tsdfWeightMaskMaterial);
+
+            if (Time.frameCount % 90 == 0)
+                Debug.Log($"[STRIPE MASK] F{Time.frameCount} TSDF GPU mask rendered, debugGeom={debugGeometryAlignment}");
+
+            return true;
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogError($"[STRIPE MASK] RenderCoverageMaskToRT failed: {e.Message}");
+            return false;
+        }
+    }
+
     // Store crop info for coordinate mapping
     private float cropScaleRatio = 1f;
     private float cropOffsetX = 0f;
@@ -1550,6 +1546,7 @@ public class ARCombinedOverlay : MonoBehaviour
     {
         nn?.Dispose();
         if (detectionTexture != null) Destroy(detectionTexture);
+        if (coverageMaskRT != null) { coverageMaskRT.Release(); coverageMaskRT = null; }
     }
     
     public List<ResultBox> GetLastDetections() => lastDetections;

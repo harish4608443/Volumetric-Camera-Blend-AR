@@ -5,6 +5,7 @@ Shader "TSDFWeightCoverageMask"
         _WeightAtlas ("TSDF Weight Atlas", 2D) = "black" {}
         _DepthTex ("Depth Texture", 2D) = "black" {}
         _WeightThreshold ("Weight Threshold", Float) = 1.0
+        _DebugWeights ("Debug Weight Heatmap (0=off 1=on)", Float) = 0
     }
     
     SubShader
@@ -41,6 +42,7 @@ Shader "TSDFWeightCoverageMask"
             sampler2D _WeightAtlas;
             sampler2D _DepthTex;
             float _WeightThreshold;
+            float _DebugWeights;
             
             // TSDF volume parameters (set from script)
             float3 _VolumeOrigin;
@@ -72,35 +74,29 @@ Shader "TSDFWeightCoverageMask"
                 return atlasUV;
             }
             
-            // Sample TSDF weight at world position
-            float SampleWeightAtWorldPos(float3 worldPos)
+            // Convert world position to atlas UV (shared by weight and TSDF samplers)
+            float2 WorldPosToAtlasUV(float3 worldPos)
             {
-                // Transform world to volume local space
                 float3 localPos = worldPos - _VolumeOrigin;
-                
-                // Convert to voxel coordinates
                 float3 voxelPosF = localPos / _VoxelSize;
-                voxelPosF += float3(_VolumeResolution) * 0.5; // Center offset
-                
-                // Check bounds
+                voxelPosF += float3(_VolumeResolution) * 0.5; // center offset
                 if (voxelPosF.x < 0 || voxelPosF.x >= _VolumeResolution.x ||
                     voxelPosF.y < 0 || voxelPosF.y >= _VolumeResolution.y ||
                     voxelPosF.z < 0 || voxelPosF.z >= _VolumeResolution.z)
-                {
-                    return 0.0; // Outside volume
-                }
-                
-                // Nearest neighbor lookup (fast)
+                    return float2(-1, -1); // sentinel: out of bounds
                 int3 voxelCoord = int3(voxelPosF);
-                
-                // Convert to atlas UV
-                float2 atlasUV = VoxelToAtlasUV(voxelCoord, _SlicesPerRow, _SliceRowCount, _VolumeResolution.x);
-                
-                // Sample weight atlas
-                float weight = tex2Dlod(_WeightAtlas, float4(atlasUV, 0, 0)).r;
-                
-                return weight;
+                return VoxelToAtlasUV(voxelCoord, _SlicesPerRow, _SliceRowCount, _VolumeResolution.x);
             }
+
+            // Sample TSDF weight at world position
+            float SampleWeightAtWorldPos(float3 worldPos)
+            {
+                float2 uv = WorldPosToAtlasUV(worldPos);
+                if (uv.x < 0) return 0.0; // outside volume
+                return tex2Dlod(_WeightAtlas, float4(uv, 0, 0)).r;
+            }
+
+
             
             v2f vert(appdata v)
             {
@@ -127,25 +123,51 @@ Shader "TSDFWeightCoverageMask"
             {
                 float3 rayDir = normalize(i.viewRay);
 
-                // --- Try the real ARCore depth first ---
+                // --- Debug: weight heatmap ---
+                if (_DebugWeights > 0.5)
+                {
+                    float depth = tex2D(_DepthTex, i.uv).r;
+                    float w = 0.0;
+                    if (depth >= 0.001 && depth <= 20.0)
+                    {
+                        w = SampleWeightAtWorldPos(_WorldSpaceCameraPos + rayDir * depth);
+                    }
+                    else
+                    {
+                        float tStart = 0.05;
+                        float tEnd   = float(_VolumeResolution.x) * _VoxelSize;
+                        float tStep  = (tEnd - tStart) / 32.0;
+                        for (int s = 0; s < 32; s++)
+                        {
+                            float t = tStart + (float(s) + 0.5) * tStep;
+                            float wr = SampleWeightAtWorldPos(_WorldSpaceCameraPos + rayDir * t);
+                            if (wr > w) w = wr;
+                        }
+                    }
+                    return fixed4(saturate(w / (_WeightThreshold * 5.0)), 0, 0, 1);
+                }
+
+                // --- Phase 1: fast-exit if exact depth point is scanned ---
+                // Only returns camera feed early. If it misses (depth noise, VIO drift, sub-voxel
+                // precision at threshold=5.0), it falls through to Phase 2 rather than returning
+                // stripes — this eliminates the one-frame flicker artifacts on scanned areas.
                 float depth = tex2D(_DepthTex, i.uv).r;
                 if (depth >= 0.001 && depth <= 20.0)
                 {
                     float3 worldPos = _WorldSpaceCameraPos + rayDir * depth;
                     if (SampleWeightAtWorldPos(worldPos) >= _WeightThreshold)
-                        return fixed4(1, 1, 1, 1);
-                    // Valid depth but not scanned yet → black
-                    return fixed4(0, 0, 0, 1);
+                        return fixed4(1, 1, 1, 1); // scanned at exact depth → camera feed
+                    // Miss: fall through to Phase 2 ray-march rather than returning stripes.
+                    // Phase 2 will find the scanned voxel if it exists nearby, absorbing
+                    // any depth noise or VIO drift without causing flickering artifacts.
                 }
 
-                // --- Depth invalid / stale (ARCore only fires at ~5 Hz) ---
-                // Ray-march through the TSDF volume along this pixel's view ray.
-                // If ANY sampled voxel has weight >= threshold the area was already scanned
-                // → show camera feed regardless of whether we have live depth right now.
-                // tEnd = full volume diagonal. Steps = 64 so stepSize (0.125m) < truncDist (0.15m),
-                // guaranteeing no thin scanned band is ever skipped.
+                // --- Phase 2: full ray-march (authoritative decision) ---
+                // Runs when depth is stale/invalid AND when Phase 1 misses (depth noise, drift).
+                // Searches the whole volume — if the area was scanned, it will be found here.
+                // This is what gives the smooth "slowly clears as you observe" behaviour.
                 float tStart = 0.05;
-                float tEnd   = float(_VolumeResolution.x) * _VoxelSize; // 6.4 m
+                float tEnd   = float(_VolumeResolution.x) * _VoxelSize;
                 int   steps  = 64;
                 float tStep  = (tEnd - tStart) / float(steps);
                 for (int s = 0; s < steps; s++)
@@ -153,7 +175,7 @@ Shader "TSDFWeightCoverageMask"
                     float t = tStart + (float(s) + 0.5) * tStep;
                     float3 samplePos = _WorldSpaceCameraPos + rayDir * t;
                     if (SampleWeightAtWorldPos(samplePos) >= _WeightThreshold)
-                        return fixed4(1, 1, 1, 1); // previously scanned → camera feed
+                        return fixed4(1, 1, 1, 1); // scanned voxel found → camera feed
                 }
 
                 // Nothing scanned along this ray → stripes
